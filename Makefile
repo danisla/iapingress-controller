@@ -87,6 +87,9 @@ shell:
 devshell:
 	@kubectl exec -n $(NS) -c godev -it $(call get_pod) -- $(DEVSHELL)
 
+image:
+	gcloud container builds submit --config cloudbuild.yaml .
+
 clean:
 	-helm delete --purge $(APP)
 	-helm delete --purge godev-nfs

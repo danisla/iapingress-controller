@@ -15,6 +15,10 @@ This controller does the following:
 
 See the chart [README.md](./charts/iapingress-controller/README.md) for details.
 
+## State Machine
+
+<img src="./docs/state_diagram.jpg"></img>
+
 ## Development
 
 1. Install the prerequisites in the [iapingress-controller chart README.md](./charts/iapingress-controller/README.md)
@@ -30,3 +34,11 @@ make install
 
 1. Run `make test` to deploy example service and iapingress resource. Run `make podlogs` to see controller logs.
 2. Run `make test-stop` to delete the test iapingress resource and test service.
+
+## Building Container Image
+
+1. Build image using container builder in current project:
+
+```
+make image
+```
