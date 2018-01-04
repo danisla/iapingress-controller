@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .ServiceName }}-esp
+  namespace: {{ .Namespace }}
+  annotations:
+    "iapingresses.ctl.isla.solutions/host": "{{ .Host }}"
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: {{ .ServiceName }}-esp
+  type: NodePort

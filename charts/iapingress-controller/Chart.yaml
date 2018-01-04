@@ -1,0 +1,4 @@
+apiVersion: v1
+description: Custom Resource Definition and Lambda meta controller for for automated IAP Ingress and Extensible Service Proxy management. 
+name: iapingress-controller
+version: 0.1.0
