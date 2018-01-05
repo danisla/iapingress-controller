@@ -35,10 +35,10 @@ type LambdaResponse struct {
 
 // IapIngresControllerRequestChildren is the children definition passed by the LambdaController request for the IapIngress controller.
 type IapIngresControllerRequestChildren struct {
-	Services   map[string]corev1.Service   `json:"Service.v1"`
-	Pods       map[string]corev1.Pod       `json:"Pod.v1"`
-	ConfigMaps map[string]corev1.ConfigMap `json:"ConfigMap.v1"`
-	Ingresses  map[string]v1beta1.Ingress  `json:"Ingress.extensions/v1beta1"`
+	Services    map[string]corev1.Service     `json:"Service.v1"`
+	ConfigMaps  map[string]corev1.ConfigMap   `json:"ConfigMap.v1"`
+	Ingresses   map[string]v1beta1.Ingress    `json:"Ingress.extensions/v1beta1"`
+	ReplicaSets map[string]v1beta1.ReplicaSet `json:"Replicaset.extensions/v1beta1"`
 }
 
 // IapIngressControllerStatus is the status structure for the custom resource
@@ -128,6 +128,7 @@ type IapIngressBackend struct {
 
 // IapIngressBackendSpec is the spec for the IAP field in the custom IapIngressRule spec.
 type IapIngressBackendSpec struct {
-	Enabled   bool `json:"enabled,omitempty"`
-	CreateESP bool `json:"createESP,omitempty"`
+	Enabled     bool `json:"enabled,omitempty"`
+	CreateESP   bool `json:"createESP,omitempty"`
+	ESPReplicas int  `json:"espReplicas,omitempty"`
 }

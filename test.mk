@@ -31,6 +31,7 @@ spec:
           iap:
             enabled: true
             createESP: true
+            espReplicas: 2
           serviceName: service1
           servicePort: 80
   - host: service2.endpoints.{{PROJECT}}.cloud.goog

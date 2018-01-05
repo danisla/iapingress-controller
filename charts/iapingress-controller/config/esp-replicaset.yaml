@@ -1,0 +1,48 @@
+apiVersion: extensions/v1beta1
+kind: ReplicaSet
+metadata:
+  labels:
+    app: {{ .ServiceName }}-esp
+  name: {{ .ServiceName }}-esp
+  namespace: default
+spec:
+  replicas: {{ .Replicas }}
+  selector:
+    matchLabels:
+      app: {{ .ServiceName }}-esp
+  template:
+    metadata:
+      labels:
+        app: {{ .ServiceName }}-esp
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: esp
+        image: {{ .ContainerImage }}
+        command: [
+          "/bin/bash",
+          "-c",
+          "/usr/sbin/start_esp -p 8080 -z healthz -a ${UPSTREAM} -s ${ENDPOINT} -v ${CONFIG_VERSION}",
+        ]
+        env:
+        - name: UPSTREAM
+          value: {{ .Upstream }}
+        envFrom:
+        - configMapRef:
+            name: {{ .ServiceName }}-esp
+        readinessProbe:
+          httpGet:
+            host: "{{ .Host }}"
+            path: /_gcp_iap/identity
+            port: 443
+            scheme: HTTPS
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 2
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+        ports:
+          - containerPort: 8080

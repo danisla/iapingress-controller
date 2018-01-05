@@ -36,7 +36,7 @@ spec:
     - apiVersion: v1
       resources: ["services", "pods", "configmaps"]
     - apiVersion: extensions/v1beta1
-      resources: ["ingresses"]
+      resources: ["ingresses", "replicasets"]
   clientConfig:
     service:
       name: {{ template "iapingress-controller.fullname" . }}

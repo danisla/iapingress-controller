@@ -196,14 +196,14 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 		desiredChildren = append(desiredChildren, ing)
 	}
 
-	// Claim the ESP services, pods and configmaps
+	// Claim the ESP services, replicasets and configmaps
 	for _, svcSpec := range hostBackends {
 		espName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
 		if svc, ok := children.Services[espName]; ok == true {
 			desiredChildren = append(desiredChildren, svc)
 		}
-		if pod, ok := children.Pods[espName]; ok == true {
-			desiredChildren = append(desiredChildren, pod)
+		if rs, ok := children.ReplicaSets[espName]; ok == true {
+			desiredChildren = append(desiredChildren, rs)
 		}
 		if cm, ok := children.ConfigMaps[espName]; ok == true {
 			desiredChildren = append(desiredChildren, cm)
@@ -567,34 +567,32 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 			desiredChildren = append(desiredChildren, cm)
 
 			if svcSpec.IAP.CreateESP {
-				podName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
+				rsName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
 
-				if _, ok := children.Pods[podName]; ok == false {
+				if _, ok := children.ReplicaSets[rsName]; ok == false {
 					// Create the ESP pod.
 					if svcSpec.IAP.CreateESP {
 						log.Printf("[INFO] Creating ESP pod deployment for: endpoint: %s, config: %s", ep, cfg)
 
-						pod, err := makeESPPod(espContainerImage, parent.Namespace, svcSpec.ServiceName, int(svcSpec.ServicePort.IntVal), host)
+						numReplicas := svcSpec.IAP.ESPReplicas
+						if numReplicas == 0 {
+							numReplicas = 1 // Default value
+						}
+						rs, err := makeESPReplicaSet(espContainerImage, parent.Namespace, svcSpec.ServiceName, int(svcSpec.ServicePort.IntVal), host, numReplicas)
 						if err != nil {
-							log.Printf("[ERROR] Failed to create pod from template for endpoint: %s", ep)
+							log.Printf("[ERROR] Failed to create replicaset from template for endpoint: %s", ep)
 							return nil, err
 						}
-						desiredChildren = append(desiredChildren, pod)
+						desiredChildren = append(desiredChildren, rs)
 					}
 					allReady = false
 				} else {
-					// Pod exists, check for Ready state
-					if len(children.Pods[podName].Status.Conditions) == 0 {
+					// ReplicaSet exists, check for if any replicas are Ready.
+					rs := children.ReplicaSets[rsName]
+					if rs.Status.ReadyReplicas > 0 {
+						status.Services[host].ESPPod = "READY"
+					} else {
 						allReady = false
-					}
-					for _, c := range children.Pods[podName].Status.Conditions {
-						if c.Type == corev1.PodReady {
-							if c.Status == corev1.ConditionTrue {
-								status.Services[host].ESPPod = "READY"
-							} else {
-								allReady = false
-							}
-						}
 					}
 				}
 			} else {
@@ -657,8 +655,8 @@ func changeDetected(parent *IapIngress, children *IapIngresControllerRequestChil
 					log.Printf("[DEBUG] Changed because ESP service not found.")
 					changed = true
 				}
-				if _, ok := children.Pods[espName]; ok == false {
-					log.Printf("[DEBUG] Changed because ESP pod not found.")
+				if _, ok := children.ReplicaSets[espName]; ok == false {
+					log.Printf("[DEBUG] Changed because ESP replicaset not found.")
 					changed = true
 				}
 			}
@@ -911,4 +909,41 @@ func makeESPPod(containerImage string, namespace string, svcName string, svcPort
 	}
 
 	return &pod, nil
+}
+
+func makeESPReplicaSet(containerImage string, namespace string, svcName string, svcPort int, host string, numReplicas int) (*v1beta1.ReplicaSet, error) {
+	t, err := template.New("esp-replicaset.yaml").ParseFiles(path.Join(templatePath, "esp-replicaset.yaml"))
+	if err != nil {
+		return nil, err
+	}
+
+	type espReplicaSetTemplateData struct {
+		Namespace      string
+		ServiceName    string
+		Replicas       int
+		ContainerImage string
+		Host           string
+		Upstream       string
+	}
+
+	data := espReplicaSetTemplateData{
+		Namespace:      namespace,
+		ServiceName:    svcName,
+		Replicas:       numReplicas,
+		ContainerImage: containerImage,
+		Host:           host,
+		Upstream:       fmt.Sprintf("%s:%d", svcName, svcPort),
+	}
+
+	var b bytes.Buffer
+	if err := t.Execute(&b, data); err != nil {
+		return nil, err
+	}
+
+	var rs v1beta1.ReplicaSet
+	if err = yaml.Unmarshal(b.Bytes(), &rs); err != nil {
+		return nil, err
+	}
+
+	return &rs, nil
 }

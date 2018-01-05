@@ -12,8 +12,8 @@ metadata:
 data:
   esp-configmap.yaml: |
 {{ .Files.Get "config/esp-configmap.yaml" | indent 4 }}
-  esp-pod.yaml: |
-{{ .Files.Get "config/esp-pod.yaml" | indent 4 }}
+  esp-replicaset.yaml: |
+{{ .Files.Get "config/esp-replicaset.yaml" | indent 4 }}
   esp-svc.yaml: |
 {{ .Files.Get "config/esp-svc.yaml" | indent 4 }}
   openapi.yaml: |
