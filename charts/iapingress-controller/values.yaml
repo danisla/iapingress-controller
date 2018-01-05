@@ -21,15 +21,3 @@ image:
   repository: gcr.io/cloud-solutions-group/iapingress-controller
   tag: 0.1.2
   pullPolicy: IfNotPresent
-
-kube-lego:
-  enabled: false
-  config:
-## REQUIRED must be set to a valid email
-    LEGO_EMAIL:
-#   Set to https://acme-v01.api.letsencrypt.org/directory for "real" certs
-    LEGO_URL: https://acme-staging.api.letsencrypt.org/directory
-    LEGO_SECRET_NAME: lego-acme
-
-kube-metacontroller:
-  enabled: false
