@@ -6,6 +6,7 @@ NS := metacontroller
 DEPS := $(addprefix $(CHART_DIR)/, oauth.env iapingress-controller-sa-key.json)
 GODEV_BUILD_SUBDIR := ./cmd/iapingress-controller
 DEVSHELL=bash
+IMAGE_PROJECT=cloud-solutions-group
 
 NFS_CHART_DIR := charts/nfs-server
 NFS_HOST := godev-nfs-nfs-server.$(NS).svc.cluster.local
@@ -88,7 +89,7 @@ devshell:
 	@kubectl exec -n $(NS) -c godev -it $(call get_pod) -- $(DEVSHELL)
 
 image:
-	gcloud container builds submit --config cloudbuild.yaml .
+	gcloud container builds submit --config --project $(IMAGE_PROJECT) cloudbuild.yaml .
 
 clean:
 	-helm delete --purge $(APP)

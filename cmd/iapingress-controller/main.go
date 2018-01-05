@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -102,22 +103,18 @@ func lambdaHandler() func(w http.ResponseWriter, r *http.Request) {
 }
 
 func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*LambdaResponse, error) {
-	status := makeStatus(parent)
+	status := makeStatus(parent, children)
 	currState := status.StateCurrent
 	if currState == "" {
-		currState = "IDLE"
+		currState = StateIdle
 	}
 	desiredChildren := make([]interface{}, 0)
 	nextState := currState[0:1] + currState[1:] // string copy of currState
 
 	changed := changeDetected(parent, children, status)
-	if changed {
-		log.Printf("[INFO] Change in spec detected, restarting state machine.")
-	}
-
 	hostBackends := makeHostBackends(parent)
 
-	if currState == "IDLE" && changed {
+	if currState == StateIdle && changed {
 		// Add the IAM role
 		role := parent.Spec.IAPProjectAuthz.Role
 		if role == "" {
@@ -171,67 +168,92 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 					return nil, err
 				}
 				desiredChildren = append(desiredChildren, svc)
+			} else {
+				// Lookup existing service
+				svc, err := config.clientset.CoreV1().Services(parent.Namespace).Get(svcSpec.ServiceName, metav1.GetOptions{})
+				if err != nil {
+					log.Printf("[ERROR] Existing service not found: %s", svcSpec.ServiceName)
+					return nil, err
+				}
+				if svc.Spec.Type != corev1.ServiceTypeNodePort {
+					log.Printf("[ERROR] Existing service is not type=NodePort, service: %s, type: %s", svc.Namespace, svc.Spec.Type)
+					return nil, err
+				}
+				if status.StateData.NodePorts == nil {
+					status.StateData.NodePorts = make(map[string]string)
+				}
+				status.StateData.NodePorts[host] = strconv.Itoa(int(svc.Spec.Ports[0].NodePort))
 			}
 		}
 
-		status.LastAppliedSig = calcParentSig(parent)
-		nextState = "IP_PENDING"
-	} else {
-		// Claim the ingress.
-		if ing, ok := children.Ingresses[parent.Name]; ok == true {
-			desiredChildren = append(desiredChildren, ing)
-		}
+		nextState = StateIPPending
 
-		// Claim the ESP services and pods.
-		for _, svcSpec := range hostBackends {
-			espName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
-			if svc, ok := children.Services[espName]; ok == true {
-				desiredChildren = append(desiredChildren, svc)
-			}
-			if pod, ok := children.Pods[espName]; ok == true {
-				desiredChildren = append(desiredChildren, pod)
-			}
+		// status.LastAppliedSig = calcParentSig(parent, "")
+	}
+
+	// Claim the ingress.
+	if ing, ok := children.Ingresses[parent.Name]; ok == true {
+		desiredChildren = append(desiredChildren, ing)
+	}
+
+	// Claim the ESP services, pods and configmaps
+	for _, svcSpec := range hostBackends {
+		espName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
+		if svc, ok := children.Services[espName]; ok == true {
+			desiredChildren = append(desiredChildren, svc)
+		}
+		if pod, ok := children.Pods[espName]; ok == true {
+			desiredChildren = append(desiredChildren, pod)
+		}
+		if cm, ok := children.ConfigMaps[espName]; ok == true {
+			desiredChildren = append(desiredChildren, cm)
 		}
 	}
 
-	if currState == "IP_PENDING" {
+	if currState == StateIPPending {
 		if ing, ok := children.Ingresses[parent.Name]; ok == true {
 			if len(ing.Status.LoadBalancer.Ingress) > 0 {
 				if ing.Status.LoadBalancer.Ingress[0].IP != "" {
 					status.Address = ing.Status.LoadBalancer.Ingress[0].IP
 					log.Printf("[INFO] Ingress IP found: %s", status.Address)
-					nextState = "BACKEND_SVC_PENDING"
+					nextState = StateBackendSvcPending
 				}
 			}
 		}
 	}
 
-	if currState == "BACKEND_SVC_PENDING" || currState == "IAP_ENABLE_PENDING" {
+	if currState == StateBackendSvcPending || currState == StateIAPUpdatePending {
 		// Get list of backends created by the GCE ingress controller.
 		var svcBackendNames []string
-		if b, ok := children.Ingresses[parent.Name].Annotations["ingress.kubernetes.io/backends"]; ok == true {
-			var ingBackendsMap map[string]string
-			if err := json.Unmarshal([]byte(b), &ingBackendsMap); err != nil {
-				log.Printf("[ERROR] Failed to parse ingress.kubernetes.io/backends annotation: %v", err)
-				return nil, err
-			}
-			for bsName := range ingBackendsMap {
-				// Match backend with services.
-				for host, svcSpec := range hostBackends {
-					svcName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
-					nodePort := strconv.Itoa(int(children.Services[svcName].Spec.Ports[0].NodePort))
-					bsPort := strings.Split(bsName, "-")[2]
-					if bsPort == nodePort {
-						svcBackendNames = append(svcBackendNames, bsName)
-						bsData := BackendServiceStateData{
-							Name: bsName,
-						}
-						if status.StateData.Backends == nil {
-							status.StateData.Backends = make(map[string]BackendServiceStateData)
-						}
-						status.StateData.Backends[host] = bsData
-						status.Services[host].Backend = bsName
+		var ingBackends []string
+		if ing, ok := children.Ingresses[parent.Name]; ok == true {
+			ingBackends = getIngBackends(&ing)
+		}
+
+		for _, bsName := range ingBackends {
+			// Match backend with services.
+			for host, svcSpec := range hostBackends {
+				svcName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
+
+				var nodePort string
+				if svcSpec.IAP.CreateESP {
+					nodePort = strconv.Itoa(int(children.Services[svcName].Spec.Ports[0].NodePort))
+				} else {
+					// Get NodePort from state data
+					nodePort = status.StateData.NodePorts[host]
+				}
+
+				bsPort := strings.Split(bsName, "-")[2]
+				if bsPort == nodePort {
+					svcBackendNames = append(svcBackendNames, bsName)
+					bsData := BackendServiceStateData{
+						Name: bsName,
 					}
+					if status.StateData.Backends == nil {
+						status.StateData.Backends = make(map[string]BackendServiceStateData)
+					}
+					status.StateData.Backends[host] = bsData
+					status.Services[host].Backend = bsName
 				}
 			}
 		}
@@ -262,7 +284,15 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 		backendServicesMap := make(map[string]compute.BackendService)
 		for host, svcSpec := range hostBackends {
 			svcName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
-			nodePort := strconv.Itoa(int(children.Services[svcName].Spec.Ports[0].NodePort))
+
+			var nodePort string
+			if svcSpec.IAP.CreateESP {
+				nodePort = strconv.Itoa(int(children.Services[svcName].Spec.Ports[0].NodePort))
+			} else {
+				// Get NodePort from state data
+				nodePort = status.StateData.NodePorts[host]
+			}
+
 			bsFound := false
 			for _, bs := range backends {
 				bsPort := strings.Split(bs.Name, "-")[2]
@@ -288,43 +318,48 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 		}
 
 		if status.StateData.BackendsReady == true {
-			// Enable IAP on the backends
+			// Update IAP on the backends
 			for host, backend := range backendServicesMap {
-				if hostBackends[host].IAP.Enabled && (backend.Iap == nil || backend.Iap.Enabled == false) {
-					log.Printf("[INFO] Enabling IAP on backend service: %s", backend.Name)
-					secretSha256 := fmt.Sprintf("%x", sha256.Sum256([]byte(config.OAuthClientSecret)))
-					bsPatch := &compute.BackendService{
-						Iap: &compute.BackendServiceIAP{
-							Enabled:                  true,
-							Oauth2ClientId:           config.OAuthClientID,
-							Oauth2ClientSecret:       config.OAuthClientSecret,
-							Oauth2ClientSecretSha256: secretSha256,
-						},
+				if hostBackends[host].IAP.Enabled {
+					if backend.Iap == nil || backend.Iap.Enabled == false {
+						log.Printf("[INFO] Enabling IAP on backend service: %s, enabled=%v", backend.Name, hostBackends[host].IAP.Enabled)
+						secretSha256 := fmt.Sprintf("%x", sha256.Sum256([]byte(config.OAuthClientSecret)))
+						bsPatch := &compute.BackendService{
+							Iap: &compute.BackendServiceIAP{
+								Enabled:                  true,
+								Oauth2ClientId:           config.OAuthClientID,
+								Oauth2ClientSecret:       config.OAuthClientSecret,
+								Oauth2ClientSecretSha256: secretSha256,
+							},
+						}
+						_, err := config.clientCompute.BackendServices.Patch(config.Project, backend.Name, bsPatch).Do()
+						if err != nil {
+							log.Printf("[WARN] Error when updating IAP on backend: %s: %v", backend.Name, err)
+						}
 					}
-					_, err := config.clientCompute.BackendServices.Patch(config.Project, backend.Name, bsPatch).Do()
-					if err != nil {
-						log.Printf("[WARN] Error when enabling IAP on backend: %s: %v", backend.Name, err)
-					}
+				} else {
+					status.Services[host].IAP = "Disabled"
 				}
 			}
-			nextState = "IAP_ENABLE_PENDING"
+			nextState = StateIAPUpdatePending
+
+			status.LastAppliedSig = calcParentSig(parent, strings.Join(ingBackends, ","))
 		}
 
-		if currState == "IAP_ENABLE_PENDING" {
-			// Wait for IAP enable to complete
-			allEnabled := true
+		if currState == StateIAPUpdatePending {
+			// Wait for IAP update to complete
+			allUpdated := true
 			for host, backend := range status.StateData.Backends {
-				if hostBackends[host].IAP.Enabled == false {
-					continue
-				}
-				if backend.IAP == true {
-					log.Printf("[INFO] IAP enabled on backend: %s", backend.Name)
-					status.Services[host].IAP = "Enabled"
-				} else {
-					allEnabled = false
+				if hostBackends[host].IAP.Enabled {
+					if backend.IAP == true {
+						log.Printf("[INFO] IAP enabled on backend: %s", backend.Name)
+						status.Services[host].IAP = "Enabled"
+					} else {
+						allUpdated = false
+					}
 				}
 			}
-			if allEnabled {
+			if allUpdated {
 				// Check if endpoint service exists, if not then create it.
 				for host := range hostBackends {
 					ep := status.Services[host].Endpoint
@@ -340,12 +375,12 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 						}
 					}
 				}
-				nextState = "ENDPOINT_CREATE_PENDING"
+				nextState = StateEndpointCreatePending
 			}
 		}
 	}
 
-	if currState == "ENDPOINT_CREATE_PENDING" {
+	if currState == StateEndpointCreatePending {
 		// Submit endpoint config if services exist.
 		allSubmitted := true
 		for host := range hostBackends {
@@ -415,11 +450,11 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 			}
 		}
 		if allSubmitted {
-			nextState = "ENDPOINT_SUBMIT_PENDING"
+			nextState = StateEndpointSubmitPending
 		}
 	}
 
-	if currState == "ENDPOINT_SUBMIT_PENDING" {
+	if currState == StateEndpointSubmitPending {
 		allRolloutsCreated := true
 		for host := range hostBackends {
 			ep := status.Services[host].Endpoint
@@ -486,11 +521,11 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 			}
 		}
 		if allRolloutsCreated {
-			nextState = "ENDPOINT_ROLLOUT_PENDING"
+			nextState = StateEndpointRolloutPending
 		}
 	}
 
-	if currState == "ENDPOINT_ROLLOUT_PENDING" {
+	if currState == StateEndpointRolloutPending {
 		allRolloutsComplete := true
 		for host := range hostBackends {
 			ep := status.Services[host].Endpoint
@@ -513,30 +548,40 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 			// StateData no longer needed, clear.
 			status.StateData = nil
 
-			nextState = "ESP_POD_PENDING"
+			nextState = StateESPPodPending
 		}
 	}
 
-	if currState == "ESP_POD_PENDING" {
+	if currState == StateESPPodPending {
 		allReady := true
 		for host, svcSpec := range hostBackends {
+			ep := status.Services[host].Endpoint
+			cfg := status.Services[host].Config
+
+			// Create the ConfigMap
+			cm, err := makeConfigMap(parent.Namespace, svcSpec.ServiceName, ep, host, cfg)
+			if err != nil {
+				log.Printf("[ERROR] Failed to create configmap from template for endpoint: %s", ep)
+				return nil, err
+			}
+			desiredChildren = append(desiredChildren, cm)
+
 			if svcSpec.IAP.CreateESP {
 				podName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
 
 				if _, ok := children.Pods[podName]; ok == false {
 					// Create the ESP pod.
-					ep := status.Services[host].Endpoint
-					cfg := status.Services[host].Config
 					if svcSpec.IAP.CreateESP {
 						log.Printf("[INFO] Creating ESP pod deployment for: endpoint: %s, config: %s", ep, cfg)
 
-						pod, err := makeESPPod(espContainerImage, parent.Namespace, svcSpec.ServiceName, int(svcSpec.ServicePort.IntVal), ep, host, cfg)
+						pod, err := makeESPPod(espContainerImage, parent.Namespace, svcSpec.ServiceName, int(svcSpec.ServicePort.IntVal), host)
 						if err != nil {
-							fmt.Printf("[ERROR] Failed to create pod from template for endpoint: %s", ep)
+							log.Printf("[ERROR] Failed to create pod from template for endpoint: %s", ep)
 							return nil, err
 						}
 						desiredChildren = append(desiredChildren, pod)
 					}
+					allReady = false
 				} else {
 					// Pod exists, check for Ready state
 					if len(children.Pods[podName].Status.Conditions) == 0 {
@@ -558,7 +603,7 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 		}
 		if allReady {
 			log.Printf("[INFO] All ESP Pods ready.")
-			nextState = "IDLE"
+			nextState = StateIdle
 		}
 	}
 
@@ -598,36 +643,54 @@ func changeDetected(parent *IapIngress, children *IapIngresControllerRequestChil
 	changed := false
 
 	// If ingress object is deleted, or not yet created, recreating the ingress changes everything.
-	if _, ok := children.Ingresses[parent.Name]; ok == false {
+	if _, ok := children.Ingresses[parent.Name]; status.StateCurrent == StateIdle && ok == false {
+		log.Printf("[DEBUG] Changed because ingress not found.")
 		changed = true
 	}
 
-	// If ESP service or pod is deleted, the backend service will be re-created so trigger change.
+	// If ESP service, pod, or configmap is deleted, the backend service will be re-created so trigger change.
 	for _, svcSpec := range makeHostBackends(parent) {
 		espName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
-		if _, ok := children.Services[espName]; ok == false && status.StateCurrent == "IDLE" {
-			changed = true
-		}
-		if _, ok := children.Pods[espName]; ok == false && status.StateCurrent == "IDLE" {
-			changed = true
+		if status.StateCurrent == StateIdle {
+			if svcSpec.IAP.CreateESP {
+				if _, ok := children.Services[espName]; ok == false {
+					log.Printf("[DEBUG] Changed because ESP service not found.")
+					changed = true
+				}
+				if _, ok := children.Pods[espName]; ok == false {
+					log.Printf("[DEBUG] Changed because ESP pod not found.")
+					changed = true
+				}
+			}
+			if _, ok := children.ConfigMaps[espName]; ok == false {
+				log.Printf("[DEBUG] Changed because ESP configmap not found.")
+				changed = true
+			}
 		}
 	}
 
-	// Mark changed if parent spec changes from last applied config
-	if status.LastAppliedSig != calcParentSig(parent) {
-		changed = true
+	// Mark changed if parent spec changes or ingress backends change from last applied config
+	if status.StateCurrent == StateIdle {
+		if ing, ok := children.Ingresses[parent.Name]; ok == true {
+			if status.LastAppliedSig != calcParentSig(parent, strings.Join(getIngBackends(&ing), ",")) {
+				log.Printf("[DEBUG] Changed because parent sig or ingress backends different")
+				changed = true
+			}
+		}
 	}
 
 	return changed
 }
 
-func calcParentSig(parent *IapIngress) string {
+func calcParentSig(parent *IapIngress, addStr string) string {
 	hasher := sha1.New()
-	data, ok := parent.Annotations["kubectl.kubernetes.io/last-applied-configuration"]
-	if ok == false || data == "" {
-		log.Printf("[WARN] Parent spec annotation kubectl.kubernetes.io/last-applied-configuration was empty")
+	data, err := json.Marshal(&parent.Spec)
+	if err != nil {
+		log.Printf("[ERROR] Failed to convert parent spec to JSON, this is a bug.")
+		return ""
 	}
 	hasher.Write([]byte(data))
+	hasher.Write([]byte(addStr))
 	return fmt.Sprintf("%x", hasher.Sum(nil))
 }
 
@@ -637,6 +700,25 @@ func loadTemplate(name string) (string, error) {
 		return "", nil
 	}
 	return string(content), nil
+}
+
+func getIngBackends(ing *v1beta1.Ingress) []string {
+	backends := make([]string, 0)
+	if ing == nil {
+		return backends
+	}
+	if b, ok := ing.Annotations["ingress.kubernetes.io/backends"]; ok == true {
+		var ingBackendsMap map[string]string
+		if err := json.Unmarshal([]byte(b), &ingBackendsMap); err != nil {
+			log.Printf("[WARN] Failed to parse ingress.kubernetes.io/backends annotation: %v", err)
+			return backends
+		}
+		for bs := range ingBackendsMap {
+			backends = append(backends, bs)
+		}
+	}
+	sort.Strings(backends)
+	return backends
 }
 
 func makeIngress(parent *IapIngress) *v1beta1.Ingress {
@@ -761,28 +843,59 @@ func makeOpenAPI(ep, jwtAud, address, sig string) (string, error) {
 	return b.String(), nil
 }
 
-func makeESPPod(containerImage string, namespace string, svcName string, svcPort int, ep string, host string, cfg string) (*corev1.Pod, error) {
+func makeConfigMap(namespace string, svcName string, ep string, host string, cfg string) (*corev1.ConfigMap, error) {
+	t, err := template.New("esp-configmap.yaml").ParseFiles(path.Join(templatePath, "esp-configmap.yaml"))
+	if err != nil {
+		return nil, err
+	}
+
+	type espConfigMapTemplateData struct {
+		Namespace     string
+		ServiceName   string
+		Endpoint      string
+		ConfigVersion string
+		Host          string
+	}
+
+	data := espConfigMapTemplateData{
+		Namespace:     namespace,
+		ServiceName:   svcName,
+		Endpoint:      ep,
+		ConfigVersion: cfg,
+		Host:          host,
+	}
+
+	var b bytes.Buffer
+	if err := t.Execute(&b, data); err != nil {
+		return nil, err
+	}
+
+	var cm corev1.ConfigMap
+	if err = yaml.Unmarshal(b.Bytes(), &cm); err != nil {
+		return nil, err
+	}
+
+	return &cm, nil
+}
+
+func makeESPPod(containerImage string, namespace string, svcName string, svcPort int, host string) (*corev1.Pod, error) {
 	t, err := template.New("esp-pod.yaml").ParseFiles(path.Join(templatePath, "esp-pod.yaml"))
 	if err != nil {
 		return nil, err
 	}
 
 	type espPodTemplateData struct {
-		ContainerImage string
 		Namespace      string
 		ServiceName    string
-		Endpoint       string
-		ConfigVersion  string
+		ContainerImage string
 		Host           string
 		Upstream       string
 	}
 
 	data := espPodTemplateData{
-		ContainerImage: containerImage,
 		Namespace:      namespace,
 		ServiceName:    svcName,
-		Endpoint:       ep,
-		ConfigVersion:  cfg,
+		ContainerImage: containerImage,
 		Host:           host,
 		Upstream:       fmt.Sprintf("%s:%d", svcName, svcPort),
 	}

@@ -8,7 +8,10 @@ metadata:
     chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
     release: {{ .Release.Name }}
     heritage: {{ .Release.Service }}
+    component: iapingress-controller
 data:
+  esp-configmap.yaml: |
+{{ .Files.Get "config/esp-configmap.yaml" | indent 4 }}
   esp-pod.yaml: |
 {{ .Files.Get "config/esp-pod.yaml" | indent 4 }}
   esp-svc.yaml: |

@@ -11,6 +11,8 @@ import (
 	"google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/servicemanagement/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 // Config is the configuration structure used by the LambdaController
@@ -22,16 +24,28 @@ type Config struct {
 	clientCompute         *compute.Service
 	clientResourceManager *cloudresourcemanager.Service
 	clientServiceMan      *servicemanagement.APIService
+	clientset             *kubernetes.Clientset
 }
 
 func (c *Config) loadAndValidate() error {
+	var err error
+
+	clusterConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return err
+	}
+
+	clientset, err := kubernetes.NewForConfig(clusterConfig)
+	if err != nil {
+		return err
+	}
+	c.clientset = clientset
+
 	clientScopes := []string{
 		compute.ComputeScope,
 		servicemanagement.ServiceManagementScope,
 		cloudresourcemanager.CloudPlatformScope,
 	}
-
-	var err error
 
 	client, err := google.DefaultClient(oauth2.NoContext, strings.Join(clientScopes, " "))
 	if err != nil {

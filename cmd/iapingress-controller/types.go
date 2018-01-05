@@ -7,6 +7,20 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+// IapIngressControllerState represents the string mapping of the possible controller states. See the const definition below for enumerated states.
+type IapIngressControllerState string
+
+const (
+	StateIdle                   = "IDLE"
+	StateIPPending              = "IP_PENDING"
+	StateBackendSvcPending      = "BACKEND_SVC_PENDING"
+	StateIAPUpdatePending       = "IAP_UPDATE_PENDING"
+	StateEndpointCreatePending  = "ENDPOINT_CREATE_PENDING"
+	StateEndpointSubmitPending  = "ENDPOINT_SUBMIT_PENDING"
+	StateEndpointRolloutPending = "ENDPOINT_ROLLOUT_PENDING"
+	StateESPPodPending          = "ESP_POD_PENDING"
+)
+
 // LambdaRequest describes the payload from the LambdaController hook
 type LambdaRequest struct {
 	Parent   IapIngress                         `json:"parent"`
@@ -21,9 +35,10 @@ type LambdaResponse struct {
 
 // IapIngresControllerRequestChildren is the children definition passed by the LambdaController request for the IapIngress controller.
 type IapIngresControllerRequestChildren struct {
-	Services  map[string]corev1.Service  `json:"Service.v1"`
-	Pods      map[string]corev1.Pod      `json:"Pod.v1"`
-	Ingresses map[string]v1beta1.Ingress `json:"Ingress.extensions/v1beta1"`
+	Services   map[string]corev1.Service   `json:"Service.v1"`
+	Pods       map[string]corev1.Pod       `json:"Pod.v1"`
+	ConfigMaps map[string]corev1.ConfigMap `json:"ConfigMap.v1"`
+	Ingresses  map[string]v1beta1.Ingress  `json:"Ingress.extensions/v1beta1"`
 }
 
 // IapIngressControllerStatus is the status structure for the custom resource
@@ -39,6 +54,7 @@ type IapIngressControllerStatus struct {
 
 // IapIngressControllerStatusStateData is the data structure stored in the StateData.
 type IapIngressControllerStatusStateData struct {
+	NodePorts       map[string]string                  `json:"nodePorts,omitempty"`
 	Backends        map[string]BackendServiceStateData `json:"backends,omitempty"`
 	BackendsReady   bool                               `json:"backendsReady,omitempty"`
 	ConfigSubmits   map[string]string                  `json:"configSubmits,omitempty"`

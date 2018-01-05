@@ -10,13 +10,17 @@ spec:
   containers:
   - name: esp
     image: {{ .ContainerImage }}
-    args: [
-      "-p", "8080",
-      "-a", "{{ .Upstream }}",
-      "-s", "{{ .Endpoint }}",
-      "-v", "{{ .ConfigVersion }}",
-      "-z", "healthz",
+    command: [
+      "/bin/bash",
+      "-c",
+      "/usr/sbin/start_esp -p 8080 -z healthz -a ${UPSTREAM} -s ${ENDPOINT} -v ${CONFIG_VERSION}",
     ]
+    env:
+    - name: UPSTREAM
+      value: {{ .Upstream }}
+    envFrom:
+    - configMapRef:
+        name: {{ .ServiceName }}-esp
     readinessProbe:
       httpGet:
         host: "{{ .Host }}"

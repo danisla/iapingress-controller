@@ -3,9 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 )
 
-func makeStatus(parent *IapIngress) *IapIngressControllerStatus {
+func makeStatus(parent *IapIngress, children *IapIngresControllerRequestChildren) *IapIngressControllerStatus {
 	status := IapIngressControllerStatus{
 		StateCurrent:  "IDLE",
 		StateData:     &IapIngressControllerStatusStateData{},
@@ -16,10 +17,11 @@ func makeStatus(parent *IapIngress) *IapIngressControllerStatus {
 	}
 
 	changed := false
-	sig := calcParentSig(parent)
+	ing := children.Ingresses[parent.Name]
+	sig := calcParentSig(parent, strings.Join(getIngBackends(&ing), ","))
 
 	if parent.Status.LastAppliedSig != "" {
-		if sig != parent.Status.LastAppliedSig {
+		if parent.Status.StateCurrent == StateIdle && sig != parent.Status.LastAppliedSig {
 			changed = true
 			status.LastAppliedSig = ""
 		} else {
