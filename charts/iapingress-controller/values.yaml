@@ -19,9 +19,8 @@ godev:
 
 image:
   repository: gcr.io/cloud-solutions-group/iapingress-controller
-  tag: 0.1.1
-  # pullPolicy: IfNotPresent
-  pullPolicy: Always
+  tag: 0.1.2
+  pullPolicy: IfNotPresent
 
 kube-lego:
   enabled: false

@@ -89,7 +89,7 @@ devshell:
 	@kubectl exec -n $(NS) -c godev -it $(call get_pod) -- $(DEVSHELL)
 
 image:
-	gcloud container builds submit --config --project $(IMAGE_PROJECT) cloudbuild.yaml .
+	gcloud container builds submit --project $(IMAGE_PROJECT) --config cloudbuild.yaml .
 
 clean:
 	-helm delete --purge $(APP)
