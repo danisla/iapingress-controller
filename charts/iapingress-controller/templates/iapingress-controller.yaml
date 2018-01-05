@@ -1,0 +1,119 @@
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: {{ template "iapingress-controller.fullname" . }}
+  labels:
+    app: {{ template "iapingress-controller.name" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: iapingress-controller
+spec:
+  replicas: {{ .Values.replicaCount }}
+  template:
+    metadata:
+      labels:
+        app: iapingress-controller
+        chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+        release: {{ .Release.Name }}
+        heritage: {{ .Release.Service }}
+        component: iapingress-controller
+      annotations:
+        {{- if eq .Values.godev.enabled false }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}  
+        {{- end }}
+    spec:
+      serviceAccountName: {{ template "iapingress-controller.fullname" . }}
+      terminationGracePeriodSeconds: 5
+      {{- if .Values.godev.enabled }}
+      {{- if .Values.godev.persistence.enabled }}
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: component
+                operator: In
+                values:
+                - nfs-server
+            topologyKey: "kubernetes.io/hostname"
+      {{- end }}
+      {{- end }}
+      containers:
+      {{- if .Values.godev.enabled }}
+      - name: godev
+        image: "docker.io/golang:1.9.2-alpine3.7"
+        imagePullPolicy: IfNotPresent
+        command: ["/opt/godev/start.sh"]
+        volumeMounts:
+        - name: godev-data
+          mountPath: /opt/godev
+        - name: godev-shared
+          mountPath: /go/bin
+        - name: godev-persist
+          mountPath: /go/pkg
+      {{- end }}
+      - name: iapingress-controller
+        {{- if .Values.godev.enabled }}
+        image: "docker.io/golang:1.9.2-alpine3.7"
+        {{- else }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        {{- end }}
+        imagePullPolicy: {{ default "" .Values.image.pullPolicy | quote }}
+        {{- if .Values.godev.enabled }}
+        command: ["/opt/godev/watcher.sh"]
+        {{- end }}
+        env:
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /var/run/secrets/sa/{{ required "A valid .Values.cloudSA.secretKey value is required!" .Values.cloudSA.secretKey }}
+        volumeMounts:
+        - name: app-data
+          mountPath: /opt/app
+        - name: oauth
+          readOnly: true
+          mountPath: /var/run/secrets/oauth
+        - name: sa-key
+          readOnly: true
+          mountPath: /var/run/secrets/sa
+        {{- if .Values.godev.enabled }}
+        - name: godev-data
+          mountPath: /opt/godev
+        - name: godev-shared
+          mountPath: /opt/shared
+        {{- end }}
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            {{- if .Values.godev.enabled }}
+            port: 8000
+            {{- else }}
+            port: 80
+            {{- end }}
+            scheme: HTTP
+          periodSeconds: 5
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 2
+      volumes:
+      - name: app-data
+        configMap:
+          name: iapingress-controller
+      - name: oauth
+        secret:
+          secretName: {{ required "A valid .Values.oauthSecret value is required!" .Values.oauthSecret }}
+      - name: sa-key
+        secret:
+          secretName: {{ required "A valid .Values.cloudSA.secretName value is required!" .Values.cloudSA.secretName }}
+      {{- if .Values.godev.enabled }}
+      - name: godev-data
+        configMap:
+          name: {{ template "iapingress-controller.fullname" . }}-godev
+          defaultMode: 0755
+      - name: godev-shared
+        emptyDir: {}
+      {{- if .Values.godev.persistence.enabled }}
+      - name: godev-persist
+        persistentVolumeClaim:
+          claimName: {{ template "iapingress-controller.fullname" . }}-godev
+      {{- end }}
+      {{- end }}

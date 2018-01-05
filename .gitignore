@@ -1,3 +1,4 @@
-iapingress*.yaml
+iapingress-values.yaml
+iapingress.yaml
 service*.yaml
 *.log
