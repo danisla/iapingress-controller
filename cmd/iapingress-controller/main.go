@@ -235,25 +235,29 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 			for host, svcSpec := range hostBackends {
 				svcName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
 
-				var nodePort string
-				if svcSpec.IAP.CreateESP {
-					nodePort = strconv.Itoa(int(children.Services[svcName].Spec.Ports[0].NodePort))
-				} else {
-					// Get NodePort from state data
-					nodePort = status.StateData.NodePorts[host]
-				}
+				if svc, ok := children.Services[svcName]; ok == true {
+					var nodePort string
+					if svcSpec.IAP.CreateESP {
+						nodePort = strconv.Itoa(int(svc.Spec.Ports[0].NodePort))
+					} else {
+						// Get NodePort from state data
+						nodePort = status.StateData.NodePorts[host]
+					}
 
-				bsPort := strings.Split(bsName, "-")[2]
-				if bsPort == nodePort {
-					svcBackendNames = append(svcBackendNames, bsName)
-					bsData := BackendServiceStateData{
-						Name: bsName,
+					bsPort := strings.Split(bsName, "-")[2]
+					if bsPort == nodePort {
+						svcBackendNames = append(svcBackendNames, bsName)
+						bsData := BackendServiceStateData{
+							Name: bsName,
+						}
+						if status.StateData.Backends == nil {
+							status.StateData.Backends = make(map[string]BackendServiceStateData)
+						}
+						status.StateData.Backends[host] = bsData
+						status.Services[host].Backend = bsName
 					}
-					if status.StateData.Backends == nil {
-						status.StateData.Backends = make(map[string]BackendServiceStateData)
-					}
-					status.StateData.Backends[host] = bsData
-					status.Services[host].Backend = bsName
+				} else {
+					return nil, fmt.Errorf("[ERROR] Failed to find ESP service: %s", svcName)
 				}
 			}
 		}
