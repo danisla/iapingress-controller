@@ -19,5 +19,5 @@ godev:
 
 image:
   repository: gcr.io/cloud-solutions-group/iapingress-controller
-  tag: 0.1.2
+  tag: 0.1.3
   pullPolicy: IfNotPresent
