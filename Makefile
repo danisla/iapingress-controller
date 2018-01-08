@@ -28,6 +28,13 @@ endef
 
 install: install-nfs install-chart wait dev-cp deps build
 
+install-kube-lego:
+	@LEGO_URL=https://acme-v01.api.letsencrypt.org/directory && LEGO_EMAIL=$(shell gcloud config get-value account) && \
+	  helm install --name kube-lego --set config.LEGO_URL=$${LEGO_URL},config.LEGO_EMAIL=$${LEGO_EMAIL},rbac.create=true,rbac.serviceAccountName=kube-lego,config.LEGO_SECRET_NAME=lego-acme,config.LEGO_SUPPORTED_INGRESS_PROVIDER=gce stable/kube-lego
+
+install-kube-metacontroller:
+	  @helm install --name metacontroller --namespace metacontroller charts/kube-metacontroller
+
 install-nfs:
 	(cd $(NFS_CHART_DIR) && \
 	helm install --name godev-nfs --namespace=$(NS) .)
@@ -94,7 +101,9 @@ image:
 clean:
 	-helm delete --purge $(APP)
 	-helm delete --purge godev-nfs
+	-helm delete --purge kube-metacontroller
 	-kubectl delete secret -n metacontroller iap-oauth
 	-kubectl delete secret -n metacontroller $(APP)-sa
+	-helm delete --purge kube-lego
 
 include test.mk
