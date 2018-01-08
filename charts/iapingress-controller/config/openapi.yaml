@@ -47,7 +47,8 @@ paths:
           description: Put
         default:
           description: Error
-
+security:
+  google_jwt: []
 securityDefinitions:
   google_jwt:
     authorizationUrl: ""
