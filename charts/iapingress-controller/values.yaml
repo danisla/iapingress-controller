@@ -7,8 +7,6 @@ cloudSA:
   secretName:
   secretKey:
 
-oauthSecret:
-
 godev:
   enabled: false
   persistence:
