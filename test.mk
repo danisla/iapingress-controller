@@ -1,5 +1,5 @@
 
-TEST_ARTIFACTS := iapingress.yaml service1.yaml service2.yaml service3-sidecar.yaml service4-no-iap-esp.yaml
+TEST_ARTIFACTS := service1.yaml service2.yaml service3-sidecar.yaml service4-no-iap-esp.yaml iapingress.yaml 
 
 define TEST_IAPINGRESS
 apiVersion: ctl.isla.solutions/v1
@@ -31,9 +31,8 @@ spec:
           iap:
             enabled: true
             createESP: true
-            espReplicas: 2
           serviceName: service1
-          servicePort: 80
+          servicePort: 8080
   - host: service2.endpoints.{{PROJECT}}.cloud.goog
     http:
       paths:
@@ -42,8 +41,9 @@ spec:
           iap:
             enabled: true
             createESP: true
+            espReplicas: 2
           serviceName: service2
-          servicePort: 80
+          servicePort: 8080
   - host: service3.endpoints.{{PROJECT}}.cloud.goog
     http:
       paths:
@@ -53,7 +53,7 @@ spec:
             enabled: true
             createESP: false
           serviceName: service3
-          servicePort: 80
+          servicePort: 8080
   - host: service4.endpoints.{{PROJECT}}.cloud.goog
     http:
       paths:
@@ -63,7 +63,7 @@ spec:
             enabled: false
             createESP: false
           serviceName: service4
-          servicePort: 80
+          servicePort: 8080
 endef
 
 define TEST_SERVICE
@@ -73,7 +73,7 @@ metadata:
   name: {{NAME}}
 spec:
   ports:
-  - port: 80
+  - port: 8080
     targetPort: 8080
     protocol: TCP
     name: http
@@ -132,7 +132,7 @@ spec:
           - containerPort: 8080
         readinessProbe:
           httpGet:
-            path: /
+            path: /healthz
             port: 8080
             scheme: HTTP
           periodSeconds: 10
@@ -148,7 +148,7 @@ metadata:
   name: {{NAME}}
 spec:
   ports:
-  - port: 80
+  - port: 8080
     targetPort: 8080
     protocol: TCP
     name: http
@@ -185,6 +185,7 @@ spec:
           httpGet:
             path: /healthz
             port: 8080
+            scheme: HTTP
         ports:
           - containerPort: 8080
       - name: app
@@ -226,10 +227,9 @@ spec:
           - containerPort: 8081
         readinessProbe:
           httpGet:
-            host: {{HOST}}
-            path: /_gcp_iap/identity 
-            port: 443
-            scheme: HTTPS
+            path: /healthz
+            port: 8080
+            scheme: HTTP
           periodSeconds: 10
           timeoutSeconds: 5
           successThreshold: 1
@@ -243,7 +243,7 @@ metadata:
   name: {{NAME}}
 spec:
   ports:
-  - port: 80
+  - port: 8080
     targetPort: 8080
     protocol: TCP
     name: http
@@ -325,7 +325,6 @@ service%-sidecar.yaml:
 	@PROJECT=$$(gcloud config get-value project) ACCOUNT=$$(gcloud config get-value account) && \
 	echo "$${TEST_SIDECAR}" | \
 		sed -e "s/{{NAME}}/service$*/g" \
-		    -e "s/{{HOST}}/service$*.endpoints.$${PROJECT}.cloud.goog/g" \
 		> $@
 
 export TEST_NO_IAP_ESP

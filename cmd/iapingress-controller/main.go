@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"regexp"
 	"sort"
@@ -25,16 +26,19 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	v1beta1 "k8s.io/api/extensions/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 )
 
 var (
-	config            Config
-	templatePath      string
-	clientIDPath      string
-	clientSecretPath  string
-	defaultIAMRole    string
-	espContainerImage string
+	config                       Config
+	templatePath                 string
+	clientIDPath                 string
+	clientSecretPath             string
+	defaultIAMRole               string
+	espContainerImage            string
+	defaultESPIngressServicePort intstr.IntOrString
 )
 
 func init() {
@@ -43,6 +47,11 @@ func init() {
 	clientSecretPath = getenv("OAUTH_CLIENT_SECRET_PATH", "/var/run/secrets/oauth/CLIENT_SECRET")
 	defaultIAMRole = getenv("DEFAULT_IAM_ROLE", "roles/iap.httpsResourceAccessor")
 	espContainerImage = getenv("ESP_CONTAINER_IMAGE", "gcr.io/endpoints-release/endpoints-runtime:1")
+
+	defaultESPIngressServicePort = intstr.IntOrString{
+		IntVal: int32(8080),
+		StrVal: "8080",
+	}
 
 	config = Config{
 		Project:    "", // Derived from instance metadata server
@@ -85,11 +94,15 @@ func lambdaHandler() func(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		resp, err := sync(&req.Parent, &req.Children)
+		desiredStatus, desiredChildren, err := sync(&req.Parent, &req.Children)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			log.Printf("[ERROR] Could not sync state: %v", err)
-			return
+		}
+
+		resp := LambdaResponse{
+			Status:   *desiredStatus,
+			Children: *desiredChildren,
 		}
 
 		data, err := json.Marshal(resp)
@@ -102,7 +115,7 @@ func lambdaHandler() func(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*LambdaResponse, error) {
+func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*IapIngressControllerStatus, *[]interface{}, error) {
 	status := makeStatus(parent, children)
 	currState := status.StateCurrent
 	if currState == "" {
@@ -127,7 +140,7 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 		policy, err := config.clientResourceManager.Projects.GetIamPolicy(config.Project, &(cloudresourcemanager.GetIamPolicyRequest{})).Do()
 		if err != nil {
 			log.Printf("[ERROR] Failed to get IAM policy for project: %s", config.Project)
-			return nil, err
+			return status, &desiredChildren, err
 		}
 		newPolicy := cloudresourcemanager.Policy{
 			Version: 1,
@@ -148,36 +161,74 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 		})).Do()
 		if err != nil {
 			log.Printf("[ERROR] Failed to set new IAM policy: %v", err)
-			return nil, err
+			return status, &desiredChildren, err
 		}
 
 		status.Authorization = fmt.Sprintf("%d members", len(members))
 
+		// Create the default backend for the ingress
+		log.Printf("[INFO] Creating default backend")
+		beRs, err := makeESPDefaultBackendReplicaSet(parent.Namespace)
+		if err != nil {
+			log.Printf("[ERROR] Failed to create default ESP backend replicaset resource from template: %v", err)
+			return status, &desiredChildren, err
+		}
+		desiredChildren = append(desiredChildren, beRs)
+
+		beSvc, err := makeESPDefaultBackendService(parent.Namespace)
+		if err != nil {
+			log.Printf("[ERROR] Failed to create default ESP backend service resource from template: %v", err)
+			return status, &desiredChildren, err
+		}
+		desiredChildren = append(desiredChildren, beSvc)
+
 		// Create the Kuberntes Ingress resource
-		log.Printf("[INFO] Creating Ingress: %s", parent.Name)
-		ing := makeIngress(parent)
-		desiredChildren = append(desiredChildren, ing)
+		newIng := makeIngress(parent)
+		if _, ok := children.Ingresses[parent.Name]; ok == true {
+			log.Printf("[INFO] Updating existing Ingress: %s", newIng.Name)
+			// shell exec 'kubectl apply' to update the ingress config.
+			// Do this until we can do an apply from the go client. Reference: https://github.com/kubernetes/kubernetes/issues/17333
+
+			if err := kubectlApplyConfig(newIng); err != nil {
+				log.Printf("[ERROR] Failed to execute kubectl apply on ingress spec.")
+				return status, &desiredChildren, err
+			}
+
+		} else {
+			log.Printf("[INFO] Creating new Ingress: %s", parent.Name)
+		}
+		desiredChildren = append(desiredChildren, newIng)
 
 		// Create the ESP service for each host
 		for host, svcSpec := range hostBackends {
 			if svcSpec.IAP.CreateESP {
-				log.Printf("[INFO] Creating ESP Service: %s-esp", svcSpec.ServiceName)
-				svc, err := makeESPService(parent.Namespace, svcSpec.ServiceName, host)
-				if err != nil {
-					log.Printf("[ERROR] Failed to create ESP service resource from template: %v", err)
-					return nil, err
+				espName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
+				newSvc := makeESPService(parent.Namespace, svcSpec.ServiceName, host)
+				if _, ok := children.Services[espName]; ok == true {
+					log.Printf("[INFO] Updating existing ESP service: %s", espName)
+					if err := kubectlApplyConfig(newSvc); err != nil {
+						log.Printf("[ERROR] Failed to execute kubectl apply on ESP service spec.")
+						return status, &desiredChildren, err
+					}
+				} else {
+					// Set service selector to match on default-esp-backend while the LB is configured.
+					// The ports and health check path for the default backend are the same as the actual ESP service.
+					newSvc.Spec.Selector["app"] = "default-esp-backend"
+
+					log.Printf("[INFO] Creating ESP Service: %s", espName)
 				}
-				desiredChildren = append(desiredChildren, svc)
+				desiredChildren = append(desiredChildren, newSvc)
+
 			} else {
 				// Lookup existing service
 				svc, err := config.clientset.CoreV1().Services(parent.Namespace).Get(svcSpec.ServiceName, metav1.GetOptions{})
 				if err != nil {
 					log.Printf("[ERROR] Existing service not found: %s", svcSpec.ServiceName)
-					return nil, err
+					return status, &desiredChildren, err
 				}
 				if svc.Spec.Type != corev1.ServiceTypeNodePort {
 					log.Printf("[ERROR] Existing service is not type=NodePort, service: %s, type: %s", svc.Namespace, svc.Spec.Type)
-					return nil, err
+					return status, &desiredChildren, err
 				}
 				if status.StateData.NodePorts == nil {
 					status.StateData.NodePorts = make(map[string]string)
@@ -187,21 +238,32 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 		}
 
 		nextState = StateIPPending
+	} else {
+		// Claim the ingress.
+		if ing, ok := children.Ingresses[parent.Name]; ok == true {
+			desiredChildren = append(desiredChildren, ing)
+		}
 
-		// status.LastAppliedSig = calcParentSig(parent, "")
-	}
+		// Claim the default backend replicaset and service.
+		if beRs, ok := children.ReplicaSets["default-esp-backend"]; ok == true {
+			desiredChildren = append(desiredChildren, beRs)
+		}
+		if beSvc, ok := children.Services["default-esp-backend"]; ok == true {
+			desiredChildren = append(desiredChildren, beSvc)
+		}
 
-	// Claim the ingress.
-	if ing, ok := children.Ingresses[parent.Name]; ok == true {
-		desiredChildren = append(desiredChildren, ing)
+		// Claim the ESP services.
+		for _, svcSpec := range hostBackends {
+			espName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
+			if svc, ok := children.Services[espName]; ok == true {
+				desiredChildren = append(desiredChildren, svc)
+			}
+		}
 	}
 
 	// Claim the ESP services, replicasets and configmaps
 	for _, svcSpec := range hostBackends {
 		espName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
-		if svc, ok := children.Services[espName]; ok == true {
-			desiredChildren = append(desiredChildren, svc)
-		}
 		if rs, ok := children.ReplicaSets[espName]; ok == true {
 			desiredChildren = append(desiredChildren, rs)
 		}
@@ -219,6 +281,9 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 					nextState = StateBackendSvcPending
 				}
 			}
+		} else {
+			log.Printf("[WARN] In IP_PENDING status but Ingress child not claimed.")
+			nextState = "IDLE"
 		}
 	}
 
@@ -235,29 +300,30 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 			for host, svcSpec := range hostBackends {
 				svcName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
 
-				if svc, ok := children.Services[svcName]; ok == true {
-					var nodePort string
-					if svcSpec.IAP.CreateESP {
+				var nodePort string
+				if svcSpec.IAP.CreateESP {
+					if svc, ok := children.Services[svcName]; ok == true {
 						nodePort = strconv.Itoa(int(svc.Spec.Ports[0].NodePort))
 					} else {
-						// Get NodePort from state data
-						nodePort = status.StateData.NodePorts[host]
-					}
-
-					bsPort := strings.Split(bsName, "-")[2]
-					if bsPort == nodePort {
-						svcBackendNames = append(svcBackendNames, bsName)
-						bsData := BackendServiceStateData{
-							Name: bsName,
-						}
-						if status.StateData.Backends == nil {
-							status.StateData.Backends = make(map[string]BackendServiceStateData)
-						}
-						status.StateData.Backends[host] = bsData
-						status.Services[host].Backend = bsName
+						err := fmt.Errorf("[ERROR] Failed to find ESP service: %s", svcName)
+						return status, &desiredChildren, err
 					}
 				} else {
-					return nil, fmt.Errorf("[ERROR] Failed to find ESP service: %s", svcName)
+					// Get NodePort from state data
+					nodePort = status.StateData.NodePorts[host]
+				}
+
+				bsPort := strings.Split(bsName, "-")[2]
+				if bsPort == nodePort {
+					svcBackendNames = append(svcBackendNames, bsName)
+					bsData := BackendServiceStateData{
+						Name: bsName,
+					}
+					if status.StateData.Backends == nil {
+						status.StateData.Backends = make(map[string]BackendServiceStateData)
+					}
+					status.StateData.Backends[host] = bsData
+					status.Services[host].Backend = bsName
 				}
 			}
 		}
@@ -266,13 +332,13 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 		backendsList, err := config.clientCompute.BackendServices.List(config.Project).Do()
 		if err != nil {
 			log.Printf("[ERROR] Failed to list Compute Engine backends: %v", err)
-			return nil, err
+			return status, &desiredChildren, err
 		}
 
 		backendPattern, err := regexp.Compile(fmt.Sprintf("(%s)", strings.Join(svcBackendNames, "|")))
 		if err != nil {
 			log.Printf("[ERROR] Failed to compile backend pattern: %v", err)
-			return nil, err
+			return status, &desiredChildren, err
 		}
 
 		// Filter backends by those found in the ingress annotation.
@@ -347,6 +413,8 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 			}
 			nextState = StateIAPUpdatePending
 
+			log.Printf("[INFO] All ingress backends are ready")
+
 			status.LastAppliedSig = calcParentSig(parent, strings.Join(ingBackends, ","))
 		}
 
@@ -400,7 +468,7 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 				openAPISpec, err := makeOpenAPI(ep, jwtAud, status.Address, sig)
 				if err != nil {
 					log.Printf("[ERROR] Failed to create open api spec from template: %v", err)
-					return nil, err
+					return status, &desiredChildren, err
 				}
 
 				submitted := false
@@ -412,7 +480,7 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 				cfgs, err := config.clientServiceMan.Services.Configs.List(ep).Do()
 				if err != nil {
 					log.Printf("[ERROR] Failed to list current configs for service: %s", ep)
-					return nil, err
+					return status, &desiredChildren, err
 				}
 				if len(cfgs.ServiceConfigs) > 0 {
 					cfg := cfgs.ServiceConfigs[0]
@@ -445,7 +513,7 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 					op, err := config.clientServiceMan.Services.Configs.Submit(ep, &req).Do()
 					if err != nil {
 						log.Printf("[ERROR] Failed to submit endpoint config: %v", err)
-						return nil, err
+						return status, &desiredChildren, err
 					}
 					status.StateData.ConfigSubmits[ep] = op.Name
 				}
@@ -468,18 +536,18 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 				op, err := config.clientServiceMan.Operations.Get(submitID).Do()
 				if err != nil {
 					log.Printf("[ERROR] Failed to get service submit operation id: %s", status.StateData.ConfigSubmits[ep])
-					return nil, err
+					return status, &desiredChildren, err
 				}
 				opDone = op.Done
 
-				var resp servicemanagement.SubmitConfigSourceResponse
+				var r servicemanagement.SubmitConfigSourceResponse
 				data, _ := op.Response.MarshalJSON()
-				if err := json.Unmarshal(data, &resp); err != nil {
+				if err := json.Unmarshal(data, &r); err != nil {
 					log.Printf("[ERROR] Failed to unmarshal submit config response")
-					return nil, err
+					return status, &desiredChildren, err
 				}
-				log.Printf("[INFO] Service config submit complete for endpoint %s, config: %s", ep, resp.ServiceConfig.Id)
-				status.Services[host].Config = resp.ServiceConfig.Id
+				log.Printf("[INFO] Service config submit complete for endpoint %s, config: %s", ep, r.ServiceConfig.Id)
+				status.Services[host].Config = r.ServiceConfig.Id
 			}
 
 			cfg := status.Services[host].Config
@@ -491,12 +559,12 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 					status.StateData.ServiceRollouts = make(map[string]string)
 				}
 
-				resp, err := config.clientServiceMan.Services.Rollouts.List(ep).Do()
+				r, err := config.clientServiceMan.Services.Rollouts.List(ep).Do()
 				if err != nil {
 					log.Printf("[ERROR] Failed to list rollouts for endpoint: %s", ep)
 				}
-				if len(resp.Rollouts) > 0 {
-					if _, ok := resp.Rollouts[0].TrafficPercentStrategy.Percentages[cfg]; ok == true {
+				if len(r.Rollouts) > 0 {
+					if _, ok := r.Rollouts[0].TrafficPercentStrategy.Percentages[cfg]; ok == true {
 						log.Printf("[INFO] Rollout for config already found, skipping rollout for endpoint: %s, config: %s", ep, cfg)
 						status.StateData.ServiceRollouts[ep] = "NA"
 						found = true
@@ -516,7 +584,7 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 					}).Do()
 					if err != nil {
 						log.Printf("[ERROR] Failed to create rollout for: endpoint: %s, config: %s", ep, cfg)
-						return nil, err
+						return status, &desiredChildren, err
 					}
 					status.StateData.ServiceRollouts[ep] = op.Name
 				}
@@ -538,7 +606,7 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 				op, err := config.clientServiceMan.Operations.Get(opName).Do()
 				if err != nil {
 					log.Printf("[ERROR] Failed to get rollout operation: %s", opName)
-					return nil, err
+					return status, &desiredChildren, err
 				}
 				if op.Done {
 					cfg := status.Services[host].Config
@@ -547,10 +615,35 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 					allRolloutsComplete = false
 				}
 			}
+
 		}
 		if allRolloutsComplete {
-			// StateData no longer needed, clear.
-			status.StateData = nil
+			for host, svcSpec := range hostBackends {
+				ep := status.Services[host].Endpoint
+				cfg := status.Services[host].Config
+
+				// Create the ConfigMap
+
+				// Custom nginx config template to support websockets until this is resolved: https://github.com/cloudendpoints/endpoints-tools/issues/41
+				nginxConfBytes, err := ioutil.ReadFile(path.Join(templatePath, "nginx-auto.conf.template"))
+				if err != nil {
+					log.Printf("[ERROR] Failed to ready nginx conf template file")
+					return status, &desiredChildren, err
+				}
+				nginxConfB64 := base64.StdEncoding.EncodeToString(nginxConfBytes)
+
+				cm := makeConfigMap(parent.Namespace, svcSpec.ServiceName, ep, cfg, nginxConfB64)
+				if _, ok := children.ConfigMaps[cm.Name]; ok == true {
+					log.Printf("[INFO] Updating existing ESP configmap: %s", cm.Name)
+					if err := kubectlApplyConfig(cm); err != nil {
+						log.Printf("[ERROR] Failed to execute kubectl apply on ESP configmap spec.")
+						return status, &desiredChildren, err
+					}
+				}
+				if _, ok := children.ConfigMaps[cm.Name]; ok == false {
+					desiredChildren = append(desiredChildren, cm)
+				}
+			}
 
 			nextState = StateESPPodPending
 		}
@@ -562,33 +655,72 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 			ep := status.Services[host].Endpoint
 			cfg := status.Services[host].Config
 
-			// Create the ConfigMap
-			cm, err := makeConfigMap(parent.Namespace, svcSpec.ServiceName, ep, host, cfg)
-			if err != nil {
-				log.Printf("[ERROR] Failed to create configmap from template for endpoint: %s", ep)
-				return nil, err
-			}
-			desiredChildren = append(desiredChildren, cm)
-
 			if svcSpec.IAP.CreateESP {
 				rsName := fmt.Sprintf("%s-esp", svcSpec.ServiceName)
 
 				if _, ok := children.ReplicaSets[rsName]; ok == false {
 					// Create the ESP pod.
-					if svcSpec.IAP.CreateESP {
-						log.Printf("[INFO] Creating ESP pod deployment for: endpoint: %s, config: %s", ep, cfg)
+					log.Printf("[INFO] Creating ESP pod deployment for: endpoint: %s, config: %s", ep, cfg)
 
-						numReplicas := svcSpec.IAP.ESPReplicas
-						if numReplicas == 0 {
-							numReplicas = 1 // Default value
-						}
-						rs, err := makeESPReplicaSet(espContainerImage, parent.Namespace, svcSpec.ServiceName, int(svcSpec.ServicePort.IntVal), host, numReplicas)
-						if err != nil {
-							log.Printf("[ERROR] Failed to create replicaset from template for endpoint: %s", ep)
-							return nil, err
-						}
-						desiredChildren = append(desiredChildren, rs)
+					// Create hash of configmap to trigger change
+					cm := children.ConfigMaps[rsName]
+					cmHash, err := makeConfigMapSig(&cm)
+					if err != nil {
+						log.Printf("[ERROR] Failed to create configmap hash for %s", cm.Name)
+						return status, &desiredChildren, err
 					}
+
+					numReplicas := svcSpec.IAP.ESPReplicas
+					if numReplicas == 0 {
+						numReplicas = 1 // Default value
+					}
+					rs, err := makeESPReplicaSet(espContainerImage, parent.Namespace, svcSpec.ServiceName, int(svcSpec.ServicePort.IntVal), host, numReplicas, cmHash)
+					if err != nil {
+						log.Printf("[ERROR] Failed to create replicaset from template for endpoint: %s", ep)
+						return status, &desiredChildren, err
+					}
+
+					if _, ok := children.ReplicaSets[rs.Name]; ok == true {
+						log.Printf("[INFO] Updating existing ESP replicaset: %s", cm.Name)
+						if err := kubectlApplyConfig(rs); err != nil {
+							log.Printf("[ERROR] Failed to execute kubectl apply on ESP replicaset spec.")
+							return status, &desiredChildren, err
+						}
+					}
+					desiredChildren = append(desiredChildren, rs)
+
+					// Update the ESP service to point to the pod.
+					svc, err := config.clientset.CoreV1().Services(parent.Namespace).Get(rsName, metav1.GetOptions{})
+					if err != nil {
+						log.Printf("[ERROR] Existing ESP service not found: %s", svcSpec.ServiceName)
+						return status, &desiredChildren, err
+					}
+
+					oldData, err := json.Marshal(svc)
+					if err != nil {
+						return status, &desiredChildren, err
+					}
+
+					newSvc := svc.DeepCopy()
+					newSvc.Spec.Selector["app"] = rsName
+
+					newData, err := json.Marshal(newSvc)
+					if err != nil {
+						return status, &desiredChildren, err
+					}
+
+					patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, corev1.Service{})
+					if err != nil {
+						return status, &desiredChildren, err
+					}
+
+					// Patch the original service
+					log.Printf("[INFO] Patching service %s to point to app %s", svc.Name, rsName)
+					_, err = config.clientset.CoreV1().Services(parent.Namespace).Patch(svc.Name, types.StrategicMergePatchType, patchBytes)
+					if err != nil {
+						return status, &desiredChildren, err
+					}
+
 					allReady = false
 				} else {
 					// ReplicaSet exists, check for if any replicas are Ready.
@@ -615,12 +747,7 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*La
 	}
 	status.StateCurrent = nextState
 
-	resp := LambdaResponse{
-		Status:   *status,
-		Children: desiredChildren,
-	}
-
-	return &resp, nil
+	return status, &desiredChildren, nil
 }
 
 func getenv(key, fallback string) string {
@@ -746,10 +873,7 @@ func makeIngress(parent *IapIngress) *v1beta1.Ingress {
 
 			if hostBackends[iapRule.Host].IAP.CreateESP {
 				svcName = fmt.Sprintf("%s-esp", svcName)
-				svcPort = intstr.IntOrString{
-					IntVal: int32(80),
-					StrVal: "80",
-				}
+				svcPort = defaultESPIngressServicePort
 			}
 
 			path := v1beta1.HTTPIngressPath{
@@ -777,22 +901,45 @@ func makeIngress(parent *IapIngress) *v1beta1.Ingress {
 	return &ing
 }
 
-func makeESPService(namespace, serviceName, host string) (*corev1.Service, error) {
-	t, err := template.New("esp-svc.yaml").ParseFiles(path.Join(templatePath, "esp-svc.yaml"))
+func makeESPDefaultBackendReplicaSet(namespace string) (*v1beta1.ReplicaSet, error) {
+	t, err := template.New("default-esp-backend.yaml").ParseFiles(path.Join(templatePath, "default-esp-backend.yaml"))
 	if err != nil {
 		return nil, err
 	}
 
-	type espServiceTemplateData struct {
-		Namespace   string
-		ServiceName string
-		Host        string
+	type espDefaultBackendTemplateData struct {
+		Namespace string
 	}
 
-	data := espServiceTemplateData{
-		Namespace:   namespace,
-		ServiceName: serviceName,
-		Host:        host,
+	data := espDefaultBackendTemplateData{
+		Namespace: namespace,
+	}
+
+	var b bytes.Buffer
+	if err := t.Execute(&b, data); err != nil {
+		return nil, err
+	}
+
+	var rs v1beta1.ReplicaSet
+	if err = yaml.Unmarshal(b.Bytes(), &rs); err != nil {
+		return nil, err
+	}
+
+	return &rs, nil
+}
+
+func makeESPDefaultBackendService(namespace string) (*corev1.Service, error) {
+	t, err := template.New("default-esp-backend-svc.yaml").ParseFiles(path.Join(templatePath, "default-esp-backend-svc.yaml"))
+	if err != nil {
+		return nil, err
+	}
+
+	type espDefaultBackendServiceTemplateData struct {
+		Namespace string
+	}
+
+	data := espDefaultBackendServiceTemplateData{
+		Namespace: namespace,
 	}
 
 	var b bytes.Buffer
@@ -807,6 +954,36 @@ func makeESPService(namespace, serviceName, host string) (*corev1.Service, error
 
 	return &svc, nil
 }
+func makeESPService(namespace, serviceName, host string) *corev1.Service {
+	espName := fmt.Sprintf("%s-esp", serviceName)
+	var svc corev1.Service
+	svc.Kind = "Service"
+	svc.APIVersion = "v1"
+	svc.ObjectMeta = metav1.ObjectMeta{
+		Name:      espName,
+		Namespace: namespace,
+		Annotations: map[string]string{
+			"iapingresses.ctl.isla.solutions/host": host,
+		},
+	}
+	var spec corev1.ServiceSpec
+	ports := []corev1.ServicePort{
+		corev1.ServicePort{
+			Name:       "http",
+			Port:       defaultESPIngressServicePort.IntVal,
+			TargetPort: defaultESPIngressServicePort,
+			Protocol:   corev1.ProtocolTCP,
+		},
+	}
+	spec.Ports = ports
+	spec.Selector = map[string]string{
+		"app": espName,
+	}
+	spec.Type = corev1.ServiceTypeNodePort
+	svc.Spec = spec
+
+	return &svc
+}
 
 func makeJWTAudience(projectNum, backendID string) string {
 	return fmt.Sprintf("/projects/%s/global/backendServices/%s", projectNum, backendID)
@@ -815,6 +992,14 @@ func makeJWTAudience(projectNum, backendID string) string {
 func makeOpenAPISig(ep, jwtAud, address string) string {
 	sigStr := fmt.Sprintf("%s|%s|%s", ep, jwtAud, address)
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(sigStr)))
+}
+
+func makeConfigMapSig(cm *corev1.ConfigMap) (string, error) {
+	data, err := json.Marshal(&cm)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(string(data)))), nil
 }
 
 func makeOpenAPI(ep, jwtAud, address, sig string) (string, error) {
@@ -845,77 +1030,30 @@ func makeOpenAPI(ep, jwtAud, address, sig string) (string, error) {
 	return b.String(), nil
 }
 
-func makeConfigMap(namespace string, svcName string, ep string, host string, cfg string) (*corev1.ConfigMap, error) {
-	t, err := template.New("esp-configmap.yaml").ParseFiles(path.Join(templatePath, "esp-configmap.yaml"))
-	if err != nil {
-		return nil, err
-	}
-
-	type espConfigMapTemplateData struct {
-		Namespace     string
-		ServiceName   string
-		Endpoint      string
-		ConfigVersion string
-		Host          string
-	}
-
-	data := espConfigMapTemplateData{
-		Namespace:     namespace,
-		ServiceName:   svcName,
-		Endpoint:      ep,
-		ConfigVersion: cfg,
-		Host:          host,
-	}
-
-	var b bytes.Buffer
-	if err := t.Execute(&b, data); err != nil {
-		return nil, err
-	}
+func makeConfigMap(namespace string, serviceName string, ep string, cfg string, nginxConf string) *corev1.ConfigMap {
+	espName := fmt.Sprintf("%s-esp", serviceName)
 
 	var cm corev1.ConfigMap
-	if err = yaml.Unmarshal(b.Bytes(), &cm); err != nil {
-		return nil, err
+	cm.Kind = "ConfigMap"
+	cm.APIVersion = "v1"
+	cm.ObjectMeta = metav1.ObjectMeta{
+		Name:      espName,
+		Namespace: namespace,
+		Labels: map[string]string{
+			"app": espName,
+		},
 	}
 
-	return &cm, nil
+	cm.Data = map[string]string{
+		"ENDPOINT":                 ep,
+		"CONFIG_VERSION":           cfg,
+		"nginx-auto.conf.template": nginxConf,
+	}
+
+	return &cm
 }
 
-func makeESPPod(containerImage string, namespace string, svcName string, svcPort int, host string) (*corev1.Pod, error) {
-	t, err := template.New("esp-pod.yaml").ParseFiles(path.Join(templatePath, "esp-pod.yaml"))
-	if err != nil {
-		return nil, err
-	}
-
-	type espPodTemplateData struct {
-		Namespace      string
-		ServiceName    string
-		ContainerImage string
-		Host           string
-		Upstream       string
-	}
-
-	data := espPodTemplateData{
-		Namespace:      namespace,
-		ServiceName:    svcName,
-		ContainerImage: containerImage,
-		Host:           host,
-		Upstream:       fmt.Sprintf("%s:%d", svcName, svcPort),
-	}
-
-	var b bytes.Buffer
-	if err := t.Execute(&b, data); err != nil {
-		return nil, err
-	}
-
-	var pod corev1.Pod
-	if err = yaml.Unmarshal(b.Bytes(), &pod); err != nil {
-		return nil, err
-	}
-
-	return &pod, nil
-}
-
-func makeESPReplicaSet(containerImage string, namespace string, svcName string, svcPort int, host string, numReplicas int) (*v1beta1.ReplicaSet, error) {
+func makeESPReplicaSet(containerImage string, namespace string, svcName string, svcPort int, host string, numReplicas int, cmHash string) (*v1beta1.ReplicaSet, error) {
 	t, err := template.New("esp-replicaset.yaml").ParseFiles(path.Join(templatePath, "esp-replicaset.yaml"))
 	if err != nil {
 		return nil, err
@@ -923,6 +1061,7 @@ func makeESPReplicaSet(containerImage string, namespace string, svcName string, 
 
 	type espReplicaSetTemplateData struct {
 		Namespace      string
+		ConfigMapHash  string
 		ServiceName    string
 		Replicas       int
 		ContainerImage string
@@ -932,6 +1071,7 @@ func makeESPReplicaSet(containerImage string, namespace string, svcName string, 
 
 	data := espReplicaSetTemplateData{
 		Namespace:      namespace,
+		ConfigMapHash:  cmHash,
 		ServiceName:    svcName,
 		Replicas:       numReplicas,
 		ContainerImage: containerImage,
@@ -950,4 +1090,25 @@ func makeESPReplicaSet(containerImage string, namespace string, svcName string, 
 	}
 
 	return &rs, nil
+}
+
+func kubectlApplyConfig(o interface{}) error {
+	data, err := json.Marshal(&o)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	stdout := &bytes.Buffer{}
+	cmd.Stdout = stdout
+	stderr := &bytes.Buffer{}
+	cmd.Stderr = stderr
+	cmd.Stdin = strings.NewReader(string(data))
+
+	err = cmd.Run()
+	if err != nil {
+		log.Printf("[DEBUG] kubectl apply output: %s %s", stdout.String(), stderr.String())
+	}
+
+	return err
 }

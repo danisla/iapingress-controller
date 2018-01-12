@@ -26,11 +26,25 @@ $(shell while [[ $$(kubectl get pods -n $(NS) -l app=$(APP) -o json | jq -r '.it
 done)
 endef
 
+define KUBE_LEGO_VALUES
+config:
+  LEGO_SUPPORTED_INGRESS_PROVIDER: gce
+  LEGO_URL: https://acme-v01.api.letsencrypt.org/directory
+  LEGO_EMAIL: {{LEGO_EMAIL}}
+  LEGO_SECRET_NAME: lego-acme
+rbac:
+  create: true
+  serviceAccountName: kube-lego
+endef
+
 install: install-nfs install-chart wait dev-cp deps build
 
+export KUBE_LEGO_VALUES
 install-kube-lego:
-	@LEGO_URL=https://acme-v01.api.letsencrypt.org/directory && LEGO_EMAIL=$(shell gcloud config get-value account) && \
-	  helm install --name kube-lego --set config.LEGO_URL=$${LEGO_URL},config.LEGO_EMAIL=$${LEGO_EMAIL},rbac.create=true,rbac.serviceAccountName=kube-lego,config.LEGO_SECRET_NAME=lego-acme,config.LEGO_SUPPORTED_INGRESS_PROVIDER=gce stable/kube-lego
+	@LEGO_EMAIL=$(shell gcloud config get-value account) && \
+	  echo "$${KUBE_LEGO_VALUES}" | \
+	    sed -e "s/{{LEGO_EMAIL}}/$${LEGO_EMAIL}/g" > kube-lego-values.yaml && \
+		  helm install --name kube-lego -f kube-lego-values.yaml stable/kube-lego
 
 install-kube-metacontroller:
 	  @helm install --name metacontroller --namespace metacontroller charts/kube-metacontroller
@@ -101,7 +115,7 @@ image:
 clean:
 	-helm delete --purge $(APP)
 	-helm delete --purge godev-nfs
-	-helm delete --purge kube-metacontroller
+	-helm delete --purge metacontroller
 	-kubectl delete secret -n metacontroller iap-oauth
 	-kubectl delete secret -n metacontroller $(APP)-sa
 	-helm delete --purge kube-lego

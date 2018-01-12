@@ -4,7 +4,7 @@ metadata:
   labels:
     app: {{ .ServiceName }}-esp
   name: {{ .ServiceName }}-esp
-  namespace: default
+  namespace: {{ .Namespace }}
 spec:
   replicas: {{ .Replicas }}
   selector:
@@ -14,6 +14,8 @@ spec:
     metadata:
       labels:
         app: {{ .ServiceName }}-esp
+      annotations:
+        ctl.isla.solutions/espconfighash: "{{ .ConfigMapHash }}"
     spec:
       terminationGracePeriodSeconds: 10
       containers:
@@ -22,20 +24,30 @@ spec:
         command: [
           "/bin/bash",
           "-c",
-          "/usr/sbin/start_esp -p 8080 -z healthz -a ${UPSTREAM} -s ${ENDPOINT} -v ${CONFIG_VERSION}",
+          "base64 --decode /tmp/nginx-auto.conf.template > /etc/nginx/nginx-auto.conf.template && /usr/sbin/start_esp -p 8080 -z healthz -a ${UPSTREAM} -s ${ENDPOINT} -v ${CONFIG_VERSION}",
         ]
         env:
         - name: UPSTREAM
           value: {{ .Upstream }}
-        envFrom:
-        - configMapRef:
-            name: {{ .ServiceName }}-esp
+        - name: ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ .ServiceName }}-esp
+              key: ENDPOINT
+        - name: CONFIG_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: {{ .ServiceName }}-esp
+              key: CONFIG_VERSION
+        volumeMounts:
+        - name: esp-data
+          mountPath: /tmp/nginx-auto.conf.template
+          subPath: nginx-auto.conf.template
         readinessProbe:
           httpGet:
-            host: "{{ .Host }}"
-            path: /_gcp_iap/identity
-            port: 443
-            scheme: HTTPS
+            path: /healthz
+            port: 8080
+            scheme: HTTP
           periodSeconds: 10
           timeoutSeconds: 5
           successThreshold: 1
@@ -43,6 +55,16 @@ spec:
         livenessProbe:
           httpGet:
             path: /healthz
-            port: 8080
+            port: 8090
         ports:
-          - containerPort: 8080
+        - name: http
+          containerPort: 8080
+        - name: status
+          containerPort: 8090
+      volumes:
+      - name: esp-data
+        configMap:
+          name: {{ .ServiceName }}-esp
+          items:
+          - key: nginx-auto.conf.template
+            path: nginx-auto.conf.template

@@ -25,6 +25,8 @@ data:
   watcher.sh: |
     #!/bin/sh
     apk add --update inotify-tools bash curl
+    curl -o /usr/local/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/v1.8.5/bin/linux/amd64/kubectl && \
+      chmod +x /usr/local/bin/kubectl
     CMD=/opt/shared/{{ .Chart.Name }}
     while true; do
       if [[ -s ${CMD} && -x ${CMD} ]]; then 

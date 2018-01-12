@@ -2,3 +2,4 @@ iapingress-values.yaml
 iapingress.yaml
 service*.yaml
 *.log
+kube-lego-values.yaml

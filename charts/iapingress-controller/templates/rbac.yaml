@@ -39,5 +39,8 @@ metadata:
     heritage: {{ .Release.Service }}
 rules:
 - apiGroups: [""] # "" indicates the core API group
-  resources: ["services"]
-  verbs: ["get", "list"]
+  resources: ["services", "configmaps"]
+  verbs: ["get", "list", "update", "patch"]
+- apiGroups: ["extensions", "replicasets"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "update", "patch"]

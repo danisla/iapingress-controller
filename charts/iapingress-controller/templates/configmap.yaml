@@ -10,11 +10,13 @@ metadata:
     heritage: {{ .Release.Service }}
     component: iapingress-controller
 data:
-  esp-configmap.yaml: |
-{{ .Files.Get "config/esp-configmap.yaml" | indent 4 }}
   esp-replicaset.yaml: |
 {{ .Files.Get "config/esp-replicaset.yaml" | indent 4 }}
-  esp-svc.yaml: |
-{{ .Files.Get "config/esp-svc.yaml" | indent 4 }}
+  default-esp-backend.yaml: |
+{{ .Files.Get "config/default-esp-backend.yaml" | indent 4 }}
+  default-esp-backend-svc.yaml: |
+{{ .Files.Get "config/default-esp-backend-svc.yaml" | indent 4 }}
   openapi.yaml: |
 {{ .Files.Get "config/openapi.yaml" | indent 4 }}
+  nginx-auto.conf.template: |
+{{ .Files.Get "config/nginx-auto.conf.template" | indent 4 }}

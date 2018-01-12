@@ -1,16 +1,14 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .ServiceName }}-esp
+  name: default-esp-backend
   namespace: {{ .Namespace }}
-  annotations:
-    "iapingresses.ctl.isla.solutions/host": "{{ .Host }}"
 spec:
   ports:
-  - port: 80
+  - port: 8080
     targetPort: 8080
     protocol: TCP
     name: http
   selector:
-    app: {{ .ServiceName }}-esp
+    app: default-esp-backend
   type: NodePort

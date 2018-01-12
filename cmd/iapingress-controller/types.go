@@ -29,7 +29,7 @@ type LambdaRequest struct {
 
 // LambdaResponse is the LambdaController response structure.
 type LambdaResponse struct {
-	Status   IapIngressControllerStatus `json:"status"`
+	Status   IapIngressControllerStatus `json:"status`
 	Children []interface{}              `json:"children"`
 }
 
