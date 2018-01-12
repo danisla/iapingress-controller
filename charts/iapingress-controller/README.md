@@ -68,18 +68,7 @@ helm install --name metacontroller --namespace metacontroller incubator/kube-met
 
 ## Installing the chart
 
-1. Create secret with your OAuth client info:
-  a. Configure the [OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent).
-  b. Create a new [OAuth Web Application Credential](https://console.cloud.google.com/apis/credentials) and record the client ID and secret:
-
-```
-echo "CLIENT_ID=MY_CLIENT_ID" > oauth.env
-echo "CLIENT_SECRET=MY_CLIENT_SECRET" >> oauth.env
-
-kubectl create secret generic iap-oauth -n metacontroller --from-env-file=oauth.env
-```
-
-2. Create service account for the controller:
+1. Create service account for the controller:
 
 ```
 gcloud iam service-accounts create iapingress-controller \
@@ -108,7 +97,18 @@ helm install --name iapingress-controller --namespace=metacontroller --set cloud
 
 ## Usage
 
-To use the iapingress-controller, create an IapIngress resouces like the example below:
+1. Create secret with your OAuth client info:
+  a. Configure the [OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent).
+  b. Create a new [OAuth Web Application Credential](https://console.cloud.google.com/apis/credentials) and record the client ID and secret:
+
+```
+echo "CLIENT_ID=MY_CLIENT_ID" > oauth.env
+echo "CLIENT_SECRET=MY_CLIENT_SECRET" >> oauth.env
+
+kubectl create secret generic iap-ingress-oauth -n default --from-env-file=oauth.env
+```
+
+2. Create an IapIngress resouces like the example below:
 
 ```yaml
 cat > iapingress.yaml <<EOF
@@ -139,6 +139,7 @@ spec:
           iap:
             enabled: true
             createESP: true
+            oauthSecret: iap-ingress-oauth
           serviceName: service1
           servicePort: 80
   - host: service2.mydomain

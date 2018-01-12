@@ -69,9 +69,6 @@ spec:
         volumeMounts:
         - name: app-data
           mountPath: /opt/app
-        - name: oauth
-          readOnly: true
-          mountPath: /var/run/secrets/oauth
         - name: sa-key
           readOnly: true
           mountPath: /var/run/secrets/sa
@@ -98,9 +95,6 @@ spec:
       - name: app-data
         configMap:
           name: iapingress-controller
-      - name: oauth
-        secret:
-          secretName: {{ required "A valid .Values.oauthSecret value is required!" .Values.oauthSecret }}
       - name: sa-key
         secret:
           secretName: {{ required "A valid .Values.cloudSA.secretName value is required!" .Values.cloudSA.secretName }}

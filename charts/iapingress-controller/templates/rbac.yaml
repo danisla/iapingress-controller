@@ -41,6 +41,9 @@ rules:
 - apiGroups: [""] # "" indicates the core API group
   resources: ["services", "configmaps"]
   verbs: ["get", "list", "update", "patch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
 - apiGroups: ["extensions", "replicasets"]
   resources: ["ingresses"]
   verbs: ["get", "list", "update", "patch"]

@@ -34,8 +34,6 @@ import (
 var (
 	config                       Config
 	templatePath                 string
-	clientIDPath                 string
-	clientSecretPath             string
 	defaultIAMRole               string
 	espContainerImage            string
 	defaultESPIngressServicePort intstr.IntOrString
@@ -43,8 +41,6 @@ var (
 
 func init() {
 	templatePath = getenv("TEMPLATE_PATH", "/opt/app")
-	clientIDPath = getenv("OAUTH_CLIENT_ID_PATH", "/var/run/secrets/oauth/CLIENT_ID")
-	clientSecretPath = getenv("OAUTH_CLIENT_SECRET_PATH", "/var/run/secrets/oauth/CLIENT_SECRET")
 	defaultIAMRole = getenv("DEFAULT_IAM_ROLE", "roles/iap.httpsResourceAccessor")
 	espContainerImage = getenv("ESP_CONTAINER_IMAGE", "gcr.io/endpoints-release/endpoints-runtime:1")
 
@@ -393,16 +389,40 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*Ia
 				if hostBackends[host].IAP.Enabled {
 					if backend.Iap == nil || backend.Iap.Enabled == false {
 						log.Printf("[INFO] Enabling IAP on backend service: %s, enabled=%v", backend.Name, hostBackends[host].IAP.Enabled)
-						secretSha256 := fmt.Sprintf("%x", sha256.Sum256([]byte(config.OAuthClientSecret)))
+
+						// Fetch OAuth secret
+						secretName := hostBackends[host].IAP.OAuthSecretName
+						if secretName == "" {
+							log.Printf("[WARN] Missing oauthSecret in parent spec for host: %s", host)
+							return status, &desiredChildren, nil
+						}
+
+						secret, err := config.clientset.CoreV1().Secrets(parent.Namespace).Get(secretName, metav1.GetOptions{})
+						if err != nil {
+							log.Printf("[WARN] Failed to get secret for oauthSecret '%s' for host: '%s'", secretName, host)
+							return status, &desiredChildren, err
+						}
+
+						clientID := string(secret.Data["CLIENT_ID"])
+						clientSecret := string(secret.Data["CLIENT_SECRET"])
+
+						if clientID == "" || clientSecret == "" {
+							log.Printf("[ERROR] Invalid CLIENT_ID and CLIENT_SECRET found in oauthSecret: %s", secretName)
+							return status, &desiredChildren, nil
+						}
+
+						log.Printf("[DEBUG] OAuth client id and secret: %s, %s", clientID, clientSecret)
+
+						secretSha256 := fmt.Sprintf("%x", sha256.Sum256([]byte(clientSecret)))
 						bsPatch := &compute.BackendService{
 							Iap: &compute.BackendServiceIAP{
 								Enabled:                  true,
-								Oauth2ClientId:           config.OAuthClientID,
-								Oauth2ClientSecret:       config.OAuthClientSecret,
+								Oauth2ClientId:           clientID,
+								Oauth2ClientSecret:       clientSecret,
 								Oauth2ClientSecretSha256: secretSha256,
 							},
 						}
-						_, err := config.clientCompute.BackendServices.Patch(config.Project, backend.Name, bsPatch).Do()
+						_, err = config.clientCompute.BackendServices.Patch(config.Project, backend.Name, bsPatch).Do()
 						if err != nil {
 							log.Printf("[WARN] Error when updating IAP on backend: %s: %v", backend.Name, err)
 						}

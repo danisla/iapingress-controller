@@ -128,7 +128,8 @@ type IapIngressBackend struct {
 
 // IapIngressBackendSpec is the spec for the IAP field in the custom IapIngressRule spec.
 type IapIngressBackendSpec struct {
-	Enabled     bool `json:"enabled,omitempty"`
-	CreateESP   bool `json:"createESP,omitempty"`
-	ESPReplicas int  `json:"espReplicas,omitempty"`
+	Enabled         bool   `json:"enabled,omitempty"`
+	CreateESP       bool   `json:"createESP,omitempty"`
+	ESPReplicas     int    `json:"espReplicas,omitempty"`
+	OAuthSecretName string `json:"oauthSecret,omitempty"`
 }

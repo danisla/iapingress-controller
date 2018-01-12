@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io/ioutil"
 	"log"
 	"strings"
 
@@ -19,8 +18,6 @@ import (
 type Config struct {
 	Project               string
 	ProjectNum            string
-	OAuthClientID         string
-	OAuthClientSecret     string
 	clientCompute         *compute.Service
 	clientResourceManager *cloudresourcemanager.Service
 	clientServiceMan      *servicemanagement.APIService
@@ -82,21 +79,6 @@ func (c *Config) loadAndValidate() error {
 			return err
 		}
 	}
-
-	// Load OAuth client id and secret
-	clientID, err := ioutil.ReadFile(clientIDPath)
-	if err != nil {
-		log.Printf("[ERROR] Failed to read clientID from: %s", clientIDPath)
-		return err
-	}
-	c.OAuthClientID = string(clientID)
-
-	clientSecret, err := ioutil.ReadFile(clientSecretPath)
-	if err != nil {
-		log.Printf("[ERROR] Failed to read clientSecret from: %s", clientSecretPath)
-		return err
-	}
-	c.OAuthClientSecret = string(clientSecret)
 
 	return nil
 }

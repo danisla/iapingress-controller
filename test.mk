@@ -31,6 +31,7 @@ spec:
           iap:
             enabled: true
             createESP: true
+			oauthSecret: iap-ingress-oauth
           serviceName: service1
           servicePort: 8080
   - host: service2.endpoints.{{PROJECT}}.cloud.goog
@@ -41,6 +42,7 @@ spec:
           iap:
             enabled: true
             createESP: true
+			oauthSecret: iap-ingress-oauth
             espReplicas: 2
           serviceName: service2
           servicePort: 8080
@@ -52,6 +54,7 @@ spec:
           iap:
             enabled: true
             createESP: false
+			oauthSecret: iap-ingress-oauth
           serviceName: service3
           servicePort: 8080
   - host: service4.endpoints.{{PROJECT}}.cloud.goog
