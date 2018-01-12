@@ -92,7 +92,7 @@ kubectl create secret generic iapingress-controller-sa -n metacontroller --from-
 2. Install this chart:
 
 ```
-helm install --name iapingress-controller --namespace=metacontroller --set cloudSA.secretName=iapingress-controller-sa,cloudSA.secretKey=iapingress-controller-sa-key.json,oauthSecret=iap-oauth .
+helm install --name iapingress-controller --namespace=metacontroller --set cloudSA.secretName=iapingress-controller-sa,cloudSA.secretKey=iapingress-controller-sa-key.json .
 ```
 
 ## Usage
@@ -105,7 +105,7 @@ helm install --name iapingress-controller --namespace=metacontroller --set cloud
 echo "CLIENT_ID=MY_CLIENT_ID" > oauth.env
 echo "CLIENT_SECRET=MY_CLIENT_SECRET" >> oauth.env
 
-kubectl create secret generic iap-ingress-oauth -n default --from-env-file=oauth.env
+kubectl create secret generic iap-ingress-oauth --from-env-file=oauth.env
 ```
 
 2. Create an IapIngress resouces like the example below:

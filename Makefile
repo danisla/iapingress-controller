@@ -55,13 +55,13 @@ install-nfs:
 
 install-chart: $(DEPS)
 	(cd $(CHART_DIR) && \
-	kubectl create secret generic iap-oauth -n $(NS) --from-env-file=oauth.env ; \
+	kubectl create secret generic iap-ingress-oauth --from-env-file=oauth.env ; \
 	kubectl create secret generic $(APP)-sa -n $(NS) --from-file=$(APP)-sa-key.json ; \
 	helm install --name $(APP) --namespace=$(NS) --set godev.enabled=true,godev.persistence.nfsHost=$(NFS_HOST),cloudSA.secretName=$(APP)-sa,cloudSA.secretKey=$(APP)-sa-key.json .)
 
 install-chart-prod: $(DEPS)
 	(cd $(CHART_DIR) && \
-	kubectl create secret generic iap-oauth -n $(NS) --from-env-file=oauth.env ; \
+	kubectl create secret generic iap-ingress-oauth --from-env-file=oauth.env ; \
 	kubectl create secret generic $(APP)-sa -n $(NS) --from-file=$(APP)-sa-key.json ; \
 	helm install --name $(APP) --namespace=$(NS) --set cloudSA.secretName=$(APP)-sa,cloudSA.secretKey=$(APP)-sa-key.json .)
 
@@ -116,7 +116,7 @@ clean:
 	-helm delete --purge $(APP)
 	-helm delete --purge godev-nfs
 	-helm delete --purge metacontroller
-	-kubectl delete secret -n metacontroller iap-oauth
+	-kubectl delete secret iap-ingress-oauth
 	-kubectl delete secret -n metacontroller $(APP)-sa
 	-helm delete --purge kube-lego
 
