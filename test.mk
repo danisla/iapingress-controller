@@ -11,6 +11,9 @@ metadata:
     ingress.kubernetes.io/ssl-redirect: "true"
     kubernetes.io/ingress.class: "gce"
 spec:
+  backend:
+    serviceName: default-esp-backend
+    servicePort: 8080
   iapProjectAuthz:
     role: "roles/iap.httpsResourceAccessor"
     members:
