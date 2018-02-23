@@ -6,6 +6,6 @@ steps:
   args: ['install', './cmd/iapingress-controller/']
   env: ["PROJECT_ROOT=github.com/danisla/iapingress-controller"]
 - name: 'gcr.io/cloud-builders/docker'
-  args: [ 'build', '-f', 'Dockerfile', '-t', 'gcr.io/$PROJECT_ID/iapingress-controller:0.1.6', '.' ]
+  args: [ 'build', '-f', 'Dockerfile', '-t', 'gcr.io/$PROJECT_ID/iapingress-controller:0.1.7', '.' ]
 images:
-- 'gcr.io/$PROJECT_ID/iapingress-controller:0.1.6'
+- 'gcr.io/$PROJECT_ID/iapingress-controller:0.1.7'
