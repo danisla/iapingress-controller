@@ -124,6 +124,7 @@ type IapIngressBackend struct {
 	ServiceName string                `json:"serviceName"`
 	ServicePort intstr.IntOrString    `json:"servicePort"`
 	IAP         IapIngressBackendSpec `json:"iap,omitempty"`
+	TimeoutSec  intstr.IntOrString    `json:"timeoutSec,omitempty"`
 }
 
 // IapIngressBackendSpec is the spec for the IAP field in the custom IapIngressRule spec.
