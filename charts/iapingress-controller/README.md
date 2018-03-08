@@ -2,6 +2,8 @@
 
 Implementation of a [LambdaController kube-metacontroller](https://github.com/GoogleCloudPlatform/kube-metacontroller) to automatically configure the [Identity Aware Proxy](https://cloud.google.com/iap/) for GCE type ingress load balancers.
 
+<img src="https://github.com/danisla/iapingress-controller/raw/master/charts/iapingress-controller/diagram.png" width="800px"></img>
+
 This controller utilizes the following major components:
 - [kube-lego](https://github.com/kubernetes/charts/tree/master/stable/kube-lego): Automatically provision SSL certificates for ingress.
 - [Custom Resource Definitions (CRD)](https://kubernetes.io/docs/concepts/api-extension/custom-resources/): Used to represent the new `IapIngress` custom resource.
