@@ -1,5 +1,9 @@
 # IAP Ingress Controller
 
+## THIS IS NOT AN OFFICIAL GOOGLE PRODUCT
+
+## Intro
+
 Controller for a Custom Resource Definition (CRD) that mimics the Ingress spec with support for the Identity-Aware Proxy (IAP).
 
 This controller does the following:
