@@ -3,7 +3,7 @@
 1. Install the prerequisites in the [iapingress-controller chart README.md](./charts/iapingress-controller/README.md)
 
 ```
-make install-kube-lego install-kube-metacontroller
+make install-cert-manager install-kube-metacontroller
 ```
 
 2. Install the NFS chart (for deps cache), the iapingress-controller chart with godev enabled, copy the source, install the go dependencies and build the controller from source. This will also run the controller in the dev container.

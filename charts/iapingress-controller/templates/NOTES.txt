@@ -6,7 +6,8 @@ kind: IapIngress
 metadata:
   name: iap-ingress
   annotations:
-    kubernetes.io/tls-acme: "true"
+    certmanager.k8s.io/issuer: "letsencrypt-prod"
+    certmanager.k8s.io/acme-challenge-type: "http01"
     ingress.kubernetes.io/ssl-redirect: "true"
     kubernetes.io/ingress.class: "gce"
 spec:

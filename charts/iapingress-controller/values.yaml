@@ -4,6 +4,7 @@
 replicaCount: 1
 
 cloudSA:
+  enabled: false
   secretName:
   secretKey:
 
@@ -17,5 +18,5 @@ godev:
 
 image:
   repository: gcr.io/cloud-solutions-group/iapingress-controller
-  tag: 0.1.7
+  tag: 0.1.8
   pullPolicy: IfNotPresent

@@ -426,8 +426,6 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*Ia
 						return status, &desiredChildren, nil
 					}
 
-					log.Printf("[DEBUG] OAuth client id and secret: %s, %s", clientID, clientSecret)
-
 					secretSha256 := fmt.Sprintf("%x", sha256.Sum256([]byte(clientSecret)))
 					bsPatch = &compute.BackendService{
 						TimeoutSec: timeoutSec,
@@ -459,7 +457,16 @@ func sync(parent *IapIngress, children *IapIngresControllerRequestChildren) (*Ia
 
 			log.Printf("[INFO] All ingress backends are ready")
 
-			status.LastAppliedSig = calcParentSig(parent, strings.Join(ingBackends, ","))
+			if ing, ok := children.Ingresses[parent.Name]; ok == true {
+				ingBackends := ""
+				bsList, err := getIngBackendServices(parent, &ing)
+				if err != nil {
+					log.Printf("[WARN] Failed to get backend services from ingress: %v", err)
+				} else {
+					ingBackends = strings.Join(bsList, ",")
+				}
+				status.LastAppliedSig = calcParentSig(parent, ingBackends)
+			}
 		}
 
 		if currState == StateIAPUpdatePending {
@@ -845,7 +852,14 @@ func changeDetected(parent *IapIngress, children *IapIngresControllerRequestChil
 	// Mark changed if parent spec changes or ingress backends change from last applied config
 	if status.StateCurrent == StateIdle {
 		if ing, ok := children.Ingresses[parent.Name]; ok == true {
-			if status.LastAppliedSig != calcParentSig(parent, strings.Join(getIngBackends(&ing), ",")) {
+			ingBackends := ""
+			bsList, err := getIngBackendServices(parent, &ing)
+			if err != nil {
+				log.Printf("[WARN] Failed to get backend services from ingress")
+			} else {
+				ingBackends = strings.Join(bsList, ",")
+			}
+			if status.LastAppliedSig != calcParentSig(parent, ingBackends) {
 				log.Printf("[DEBUG] Changed because parent sig or ingress backends different")
 				changed = true
 			}
@@ -892,6 +906,39 @@ func getIngBackends(ing *v1beta1.Ingress) []string {
 	}
 	sort.Strings(backends)
 	return backends
+}
+
+func getIngBackendServices(parent *IapIngress, ing *v1beta1.Ingress) ([]string, error) {
+	bsList := make([]string, 0)
+	ingBackends := getIngBackends(ing)
+
+	for _, bsName := range ingBackends {
+		// Match backend with services.
+		for _, rule := range parent.Spec.Rules {
+			for _, path := range rule.HTTP.Paths {
+				var svcName string
+				if path.Backend.IAP.Enabled {
+					if path.Backend.IAP.CreateESP {
+						svcName = fmt.Sprintf("%s-esp", path.Backend.ServiceName)
+					} else {
+						svcName = path.Backend.ServiceName
+					}
+					svc, err := config.clientset.CoreV1().Services(parent.Namespace).Get(svcName, metav1.GetOptions{})
+					if err != nil {
+						return bsList, err
+					}
+					if svc.Spec.Type != corev1.ServiceTypeNodePort {
+						return bsList, fmt.Errorf("[ERROR] Service is not type=NodePort, service: %s, type: %s", svc.Name, svc.Spec.Type)
+					}
+					if strings.Contains(bsName, fmt.Sprintf("k8s-be-%s", strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))) {
+						bsList = append(bsList, bsName)
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(bsList)
+	return bsList, nil
 }
 
 func makeIngress(parent *IapIngress) *v1beta1.Ingress {

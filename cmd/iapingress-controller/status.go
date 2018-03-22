@@ -18,7 +18,16 @@ func makeStatus(parent *IapIngress, children *IapIngresControllerRequestChildren
 
 	changed := false
 	ing := children.Ingresses[parent.Name]
-	sig := calcParentSig(parent, strings.Join(getIngBackends(&ing), ","))
+	ingBackends := ""
+	if &ing != nil {
+		bsList, err := getIngBackendServices(parent, &ing)
+		if err != nil {
+			log.Printf("[WARN] Failed to get backend services from ingress: %v", err)
+		} else {
+			ingBackends = strings.Join(bsList, ",")
+		}
+	}
+	sig := calcParentSig(parent, ingBackends)
 
 	if parent.Status.LastAppliedSig != "" {
 		if parent.Status.StateCurrent == StateIdle && sig != parent.Status.LastAppliedSig {

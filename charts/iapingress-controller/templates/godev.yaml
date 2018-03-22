@@ -13,9 +13,9 @@ metadata:
 data:
   start.sh: |
     #!/bin/sh
-    apk add --update bash curl git
+    apk add --update bash rsync curl git mercurial
     go get github.com/golang/dep && go install github.com/golang/dep/cmd/dep
-    mkdir -p /go/src/{{ .Chart.Name }}
+    curl https://glide.sh/get | sh
     echo "Initialized"
     while true; do
       echo -e "HTTP/1.1 200 OK\r\n" | \

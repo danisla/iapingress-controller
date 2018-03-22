@@ -1,5 +1,11 @@
 
-TEST_ARTIFACTS := service1.yaml service2.yaml service3-sidecar.yaml service4-no-iap-esp.yaml iapingress.yaml 
+TEST_ARTIFACTS := service1.yaml service2.yaml service3-sidecar.yaml service4-no-iap-esp.yaml iapingress.yaml
+
+project:
+	$(eval PROJECT := $(shell gcloud config get-value project))
+
+account:
+	$(eval ACCOUNT := $(shell gcloud config get-value account))
 
 define TEST_IAPINGRESS
 apiVersion: ctl.isla.solutions/v1
@@ -7,9 +13,11 @@ kind: IapIngress
 metadata:
   name: iap-ingress
   annotations:
-    kubernetes.io/tls-acme: "true"
+    certmanager.k8s.io/issuer: "letsencrypt-prod"
+    certmanager.k8s.io/acme-challenge-type: "http01"
     ingress.kubernetes.io/ssl-redirect: "true"
     kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.global-static-ip-name: "iap-ingress"
 spec:
   backend:
     serviceName: default-esp-backend
@@ -34,7 +42,7 @@ spec:
           iap:
             enabled: true
             createESP: true
-			oauthSecret: iap-ingress-oauth
+            oauthSecret: iap-ingress-oauth
           serviceName: service1
           servicePort: 8080
   - host: service2.endpoints.{{PROJECT}}.cloud.goog
@@ -45,7 +53,7 @@ spec:
           iap:
             enabled: true
             createESP: true
-			oauthSecret: iap-ingress-oauth
+            oauthSecret: iap-ingress-oauth
             espReplicas: 2
           serviceName: service2
           servicePort: 8080
@@ -57,7 +65,7 @@ spec:
           iap:
             enabled: true
             createESP: false
-			oauthSecret: iap-ingress-oauth
+            oauthSecret: iap-ingress-oauth
           serviceName: service3
           servicePort: 8080
   - host: service4.endpoints.{{PROJECT}}.cloud.goog
@@ -141,8 +149,8 @@ spec:
             path: /healthz
             port: 8080
             scheme: HTTP
-          periodSeconds: 10
-          timeoutSeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
           successThreshold: 1
           failureThreshold: 2
 endef
@@ -236,8 +244,8 @@ spec:
             path: /healthz
             port: 8080
             scheme: HTTP
-          periodSeconds: 10
-          timeoutSeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
           successThreshold: 1
           failureThreshold: 2
 endef
@@ -311,25 +319,23 @@ spec:
             path: /
             port: 8080
             scheme: HTTP
-          periodSeconds: 10
-          timeoutSeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
           successThreshold: 1
           failureThreshold: 2
 endef
 
 
 export TEST_IAPINGRESS
-iapingress.yaml:
-	@PROJECT=$$(gcloud config get-value project) ACCOUNT=$$(gcloud config get-value account) && \
-	  echo "$${TEST_IAPINGRESS}" | \
-	    sed -e "s/{{PROJECT}}/$${PROJECT}/g" \
-		    -e "s/{{ACCOUNT}}/$${ACCOUNT}/g" \
+iapingress.yaml: project account
+	@echo "$${TEST_IAPINGRESS}" | \
+	    sed -e "s/{{PROJECT}}/$(PROJECT)/g" \
+		    -e "s/{{ACCOUNT}}/$(ACCOUNT)/g" \
 		> $@
 
 export TEST_SIDECAR
 service%-sidecar.yaml:
-	@PROJECT=$$(gcloud config get-value project) ACCOUNT=$$(gcloud config get-value account) && \
-	echo "$${TEST_SIDECAR}" | \
+	@echo "$${TEST_SIDECAR}" | \
 		sed -e "s/{{NAME}}/service$*/g" \
 		> $@
 
@@ -350,3 +356,6 @@ test: $(TEST_ARTIFACTS)
 
 test-stop: $(TEST_ARTIFACTS)
 	-@for f in $^; do kubectl delete -f $$f; done
+
+test-clean: $(TEST_ARTIFACTS)
+	rm -f $^

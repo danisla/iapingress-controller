@@ -64,14 +64,18 @@ spec:
         command: ["/opt/godev/watcher.sh"]
         {{- end }}
         env:
+        {{- if .Values.cloudSA.enabled }}
         - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: /var/run/secrets/sa/{{ required "A valid .Values.cloudSA.secretKey value is required!" .Values.cloudSA.secretKey }}
+          value: /var/run/secrets/sa/{{ .Values.cloudSA.secretKey }}
+        {{- end }}
         volumeMounts:
         - name: app-data
           mountPath: /opt/app
+        {{- if .Values.cloudSA.enabled }}
         - name: sa-key
           readOnly: true
           mountPath: /var/run/secrets/sa
+        {{- end }}
         {{- if .Values.godev.enabled }}
         - name: godev-data
           mountPath: /opt/godev
@@ -95,9 +99,11 @@ spec:
       - name: app-data
         configMap:
           name: iapingress-controller
+      {{- if .Values.cloudSA.enabled }}
       - name: sa-key
         secret:
           secretName: {{ required "A valid .Values.cloudSA.secretName value is required!" .Values.cloudSA.secretName }}
+      {{- end }}
       {{- if .Values.godev.enabled }}
       - name: godev-data
         configMap:

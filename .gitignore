@@ -1,5 +1,7 @@
 iapingress-values.yaml
 iapingress.yaml
 service*.yaml
+issuer.yaml
 *.log
 kube-lego-values.yaml
+oauth.env

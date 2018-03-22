@@ -3,13 +3,16 @@ SHELL := /bin/bash
 APP := iapingress-controller
 CHART_DIR := charts/iapingress-controller
 NS := metacontroller
-DEPS := $(addprefix $(CHART_DIR)/, oauth.env iapingress-controller-sa-key.json)
+DEPS := oauth.env
+GODEV_PATH := github.com/danisla/iapingress-controller
 GODEV_BUILD_SUBDIR := ./cmd/iapingress-controller
 DEVSHELL=bash
 IMAGE_PROJECT=cloud-solutions-group
 
 NFS_CHART_DIR := charts/nfs-server
 NFS_HOST := godev-nfs-nfs-server.$(NS).svc.cluster.local
+
+ACME_URL := https://acme-v01.api.letsencrypt.org/directory
 
 define get_pod
 $(shell kubectl get pods -n $(NS) -l app=$(APP) -o jsonpath='{.items..metadata.name}')
@@ -19,6 +22,10 @@ define get_metapod
 $(shell kubectl get pods -n $(NS) -l app=kube-metacontroller -o jsonpath='{.items..metadata.name}')
 endef
 
+define get_certmanagerpod
+$(shell kubectl get pods -l app=cert-manager -o jsonpath='{.items..metadata.name}')
+endef
+
 define wait_pod
 $(shell while [[ $$(kubectl get pods -n $(NS) -l app=$(APP) -o json | jq -r '.items[] | select(.status.containerStatuses[].ready == true) | .metadata.name' | wc -l) -ne 2 ]]; do \
   echo "Waiting for deployment..." 1>&2; \
@@ -26,25 +33,33 @@ $(shell while [[ $$(kubectl get pods -n $(NS) -l app=$(APP) -o json | jq -r '.it
 done)
 endef
 
-define KUBE_LEGO_VALUES
-config:
-  LEGO_SUPPORTED_INGRESS_PROVIDER: gce
-  LEGO_URL: https://acme-v01.api.letsencrypt.org/directory
-  LEGO_EMAIL: {{LEGO_EMAIL}}
-  LEGO_SECRET_NAME: lego-acme
-rbac:
-  create: true
-  serviceAccountName: kube-lego
+define ISSUER
+apiVersion: certmanager.k8s.io/v1alpha1
+kind: Issuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: {{ACME_URL}}
+    email: {{ACME_EMAIL}}
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    http01: {}
 endef
 
 install: install-nfs install-chart wait dev-cp deps build
 
-export KUBE_LEGO_VALUES
-install-kube-lego:
-	@LEGO_EMAIL=$(shell gcloud config get-value account) && \
-	  echo "$${KUBE_LEGO_VALUES}" | \
-	    sed -e "s/{{LEGO_EMAIL}}/$${LEGO_EMAIL}/g" > kube-lego-values.yaml && \
-		  helm install --name kube-lego -f kube-lego-values.yaml stable/kube-lego
+export ISSUER
+issuer.yaml:
+	$(eval ACCOUNT := $(shell gcloud config get-value account))
+	@echo "$${ISSUER}" | \
+	    sed -e "s|{{ACME_URL}}|$(ACME_URL)|g" \
+		    -e "s|{{ACME_EMAIL}}|$(ACCOUNT)|g" \
+		> $@
+
+install-cert-manager: issuer.yaml
+	helm install --name cert-manager stable/cert-manager
+	kubectl apply -f issuer.yaml
 
 install-kube-metacontroller:
 	  @helm install --name metacontroller --namespace metacontroller charts/kube-metacontroller
@@ -54,16 +69,14 @@ install-nfs:
 	helm install --name godev-nfs --namespace=$(NS) .)
 
 install-chart: $(DEPS)
-	(cd $(CHART_DIR) && \
 	kubectl create secret generic iap-ingress-oauth --from-env-file=oauth.env ; \
-	kubectl create secret generic $(APP)-sa -n $(NS) --from-file=$(APP)-sa-key.json ; \
-	helm install --name $(APP) --namespace=$(NS) --set godev.enabled=true,godev.persistence.nfsHost=$(NFS_HOST),cloudSA.secretName=$(APP)-sa,cloudSA.secretKey=$(APP)-sa-key.json .)
+	(cd $(CHART_DIR) && \
+	helm install --name $(APP) --namespace=$(NS) --set godev.enabled=true,godev.persistence.nfsHost=$(NFS_HOST) .)
 
 install-chart-prod: $(DEPS)
-	(cd $(CHART_DIR) && \
 	kubectl create secret generic iap-ingress-oauth --from-env-file=oauth.env ; \
-	kubectl create secret generic $(APP)-sa -n $(NS) --from-file=$(APP)-sa-key.json ; \
-	helm install --name $(APP) --namespace=$(NS) --set cloudSA.secretName=$(APP)-sa,cloudSA.secretKey=$(APP)-sa-key.json .)
+	(cd $(CHART_DIR) && \
+	helm install --name $(APP) --namespace=$(NS) .)
 
 uninstall-chart:
 	-helm delete --purge $(APP)
@@ -77,7 +90,7 @@ upgrade-chart:
 	helm upgrade $(APP) .)
 
 deps: dev-cp
-	@echo "Installing go deps..." && kubectl exec -n $(NS) -c godev -it $(call get_pod) -- bash -c 'cd /go/src/$(APP) && dep ensure'
+	@echo "Installing go deps with dep..." && kubectl exec -n $(NS) -c godev -it $(call get_pod) -- bash -c 'cd /go/src/$(GODEV_PATH) && dep ensure'
 
 $(CHART_DIR)/%:
 	$(error prerequisite file not found: $@)
@@ -86,10 +99,12 @@ wait:
 	$(call wait_pod)
 
 dev-cp:
-	@POD=$(call get_pod) && echo "Copying ./ to $${POD}:/go/src/$(APP)" && kubectl cp -n $(NS) -c godev ./ $${POD}:/go/src/$(APP)/
+	$(eval TMP_DIR := /tmp/$(notdir $(shell mktemp -d)))
+	@POD=$(call get_pod) && echo "Copying ./ to $${POD}:/go/src/$(GODEV_PATH)/" && kubectl cp -n $(NS) -c godev ./ $${POD}:$(TMP_DIR) && \
+	kubectl exec -n $(NS) -c godev -it $${POD} -- bash -c 'mkdir -p /go/src/$(GODEV_PATH) && rsync -ra $(TMP_DIR)/ /go/src/$(GODEV_PATH)/ && rm -rf $(TMP_DIR)'
 
 build: dev-cp
-	@echo "Building $(GODEV_BUILD_SUBDIR)..." && kubectl exec -n $(NS) -c godev -it $(call get_pod) -- bash -c 'cd /go/src/$(APP)/ && go install $(GODEV_BUILD_SUBDIR)'
+	@echo "Building $(GODEV_BUILD_SUBDIR)..." && kubectl exec -n $(NS) -c godev -it $(call get_pod) -- bash -c 'cd /go/src/$(GODEV_PATH) && go install $(GODEV_BUILD_SUBDIR)'
 
 lpods:
 	kubectl get pods -n $(NS)
@@ -102,6 +117,9 @@ devlogs:
 
 metalogs:
 	kubectl logs -n $(NS) --tail=100 -f $(call get_metapod)
+
+certlogs:
+	kubectl logs --tail=100 -f $(call get_certmanagerpod) -c cert-manager
 
 shell:
 	@kubectl exec -n $(NS) -c $(APP) -it $(call get_pod) -- $(DEVSHELL)
@@ -116,8 +134,9 @@ clean:
 	-helm delete --purge $(APP)
 	-helm delete --purge godev-nfs
 	-helm delete --purge metacontroller
-	-kubectl delete secret iap-ingress-oauth
-	-kubectl delete secret -n metacontroller $(APP)-sa
-	-helm delete --purge kube-lego
+	-kubectl delete -f issuer.yaml
+	-rm -f issuer.yaml
+	-helm delete --purge cert-manager
+	-kubectl delete secret iap-ingress-oauth letsencrypt-prod iap-ingress-tls
 
 include test.mk
