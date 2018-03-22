@@ -24,7 +24,7 @@ spec:
         command: [
           "/bin/bash",
           "-c",
-          "base64 --decode /tmp/nginx-auto.conf.template > /etc/nginx/nginx-auto.conf.template && /usr/sbin/start_esp -p 8080 -z healthz -a ${UPSTREAM} -s ${ENDPOINT} -v ${CONFIG_VERSION}",
+          "base64 --decode /tmp/esp-data/nginx-auto.conf.template > /etc/nginx/nginx-auto.conf.template && /usr/sbin/start_esp -p 8080 -z healthz -a ${UPSTREAM} -s ${ENDPOINT} -v ${CONFIG_VERSION}",
         ]
         env:
         - name: UPSTREAM
@@ -41,8 +41,7 @@ spec:
               key: CONFIG_VERSION
         volumeMounts:
         - name: esp-data
-          mountPath: /tmp/nginx-auto.conf.template
-          subPath: nginx-auto.conf.template
+          mountPath: /tmp/esp-data
         readinessProbe:
           httpGet:
             path: /healthz
@@ -65,6 +64,3 @@ spec:
       - name: esp-data
         configMap:
           name: {{ .ServiceName }}-esp
-          items:
-          - key: nginx-auto.conf.template
-            path: nginx-auto.conf.template
