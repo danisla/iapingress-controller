@@ -17,7 +17,6 @@ metadata:
     certmanager.k8s.io/acme-challenge-type: "http01"
     ingress.kubernetes.io/ssl-redirect: "true"
     kubernetes.io/ingress.class: "gce"
-    kubernetes.io/ingress.global-static-ip-name: "iap-ingress"
 spec:
   backend:
     serviceName: default-esp-backend
